@@ -332,9 +332,8 @@ function recolorOnly(forceRecompute=false){
  if(cpuRendering&&!forceRecompute)return;
  scheduleRender(true);
 }
-// CPU color animation gets its own *small* preview buffer. The full-sized
-// Float64 escape cache is sampled just once, not scanned at every animation
-// frame. On pause we restore the full-resolution image from that cache.
+// CPU animation retains the selected render resolution. Phase values are cached
+// once, but per-frame recoloring may run slower on older hardware.
 function hideAnimationPreview(){
  if(animationPreview)animationPreview.style.display='none';
  animationCache=null;
@@ -342,10 +341,7 @@ function hideAnimationPreview(){
 function animateCPUColors(){
  const c=cpuCache;
  if(!c||!c.complete)return false;
- const maxPreviewPixels=180000; // about 600 x 300; bounded cost on old phones
- const factor=Math.min(1,Math.sqrt(maxPreviewPixels/(c.w*c.h)));
- const w=Math.max(1,Math.round(c.w*factor));
- const h=Math.max(1,Math.round(c.h*factor));
+ const w=c.w, h=c.h;
  if(!animationPreview){
   animationPreview=document.createElement('canvas');
   animationPreview.style.cssText='position:absolute;inset:0;width:100%;height:100%;pointer-events:none;image-rendering:auto;';
@@ -379,15 +375,11 @@ function animateCPUColors(){
  animationCtx.putImageData(image,0,0);
  return true;
 }
-// Some mobile WebGL drivers reject the auxiliary RGBA framebuffer shader even
-// though the original Mandelbrot shader works. Never leave the animation idle:
-// use the proven direct shader at an adaptive, low-cost animation resolution.
+// Some mobile WebGL drivers reject the auxiliary RGBA framebuffer shader.
+// Direct rendering honors the selected resolution, even when frame rate falls.
 function drawDirectAnimatedGPU(){
  if(!gl||!program||backend!=='GPU'||state.iter>GPU_ITER_LIMIT)return false;
- const {w:cssW,h:cssH}=viewSize();
- // About 160k fragments: a bounded per-frame cost even on older phones.
- const scale=Math.min(1,Math.sqrt(160000/(cssW*cssH)));
- const w=Math.max(1,Math.round(cssW*scale)),h=Math.max(1,Math.round(cssH*scale));
+ const [w,h]=canvasDimensions();
  try{
   if(canvasRef.width!==w||canvasRef.height!==h){
    canvasRef.width=w;canvasRef.height=h;
@@ -422,7 +414,7 @@ function recolorAnimationFrame(){
   return animateCPUColors();
  }
  // GPU cache may be unavailable on mobile WebGL, even if the original shader works.
- // Fall back to continuously drawing its small, fast direct-shader preview.
+ // Fall back to a direct draw using the user's selected render resolution.
  if(backend==='GPU'&&state.iter<=GPU_ITER_LIMIT&&!requiresDeepPrecision(canvasDimensions()[0]))return drawDirectAnimatedGPU();
  // Wait for the current progressive 64-bit CPU render.
  return false;
