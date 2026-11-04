@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Mandelbrot Explorer</title>
+<style>
+:root{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#e9eef9;background:#080c17;font-size:14px}*{box-sizing:border-box}
+html,body{height:100%;margin:0;overflow:hidden}body{display:flex;flex-direction:column}
+header{height:58px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 18px;background:#0d1424;border-bottom:1px solid #263044;flex-shrink:0}
+.brand{display:flex;align-items:center;gap:12px}.brandmark{width:30px;height:30px;border-radius:50%;background:conic-gradient(from 200deg,#e0b66d,#7846d6,#2dc0c4,#e0b66d);box-shadow:inset 0 0 0 7px #111a2d,0 0 20px #3465b455}h1{font-size:17px;letter-spacing:.3px;margin:0;font-weight:720}header small{display:block;color:#8898b5;font-size:11px;margin-top:2px}.headright{display:flex;gap:8px;align-items:center}
+button,select,input{font:inherit}button{cursor:pointer;color:#e6edf8;background:#1a2539;border:1px solid #33435d;border-radius:8px;padding:9px 12px;transition:background .15s}button:hover{background:#2a3954}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #74bdff;outline-offset:2px}.primary{background:#255a95;border-color:#357abd}.primary:hover{background:#2f6eae}
+main{min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,1fr) 292px}#viewport{position:relative;overflow:hidden;background:#020307;touch-action:none;cursor:grab}#viewport.dragging{cursor:grabbing}#view{display:block;width:100%;height:100%}
+.hud{pointer-events:none;position:absolute;left:16px;bottom:16px;max-width:calc(100% - 32px);background:#0a1122c9;border:1px solid #33425e9e;border-radius:9px;padding:10px 13px;color:#c3d2eb;font-size:12px;line-height:1.65;backdrop-filter:blur(8px);font-variant-numeric:tabular-nums}.hud strong{color:#f4f7ff}.hud .dim{color:#889cb9}.floattools{position:absolute;right:14px;top:14px;display:flex;flex-direction:column;gap:7px}.floattools button{font-size:19px;font-weight:550;width:40px;height:40px;padding:0;background:#0f1a2edc;backdrop-filter:blur(5px)}
+aside{background:#101829;border-left:1px solid #29354b;overflow:auto;padding:19px 17px 24px;scrollbar-color:#32425c transparent}aside h2{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:#8da4c6;margin:20px 0 13px;font-weight:750}aside h2:first-child{margin-top:0}.field{margin:0 0 16px}.fieldlabel{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;gap:10px;font-size:13px}.fieldlabel output{color:#a9caff;font-variant-numeric:tabular-nums;font-size:12px}input[type=range]{width:100%;accent-color:#5da8ef;cursor:pointer}input[type=number],select,input[type=text]{width:100%;background:#0a1220;border:1px solid #33425d;color:#e5edfb;border-radius:7px;padding:9px 10px;min-width:0}select{cursor:pointer}.hint{font-size:11px;color:#8b9bb6;line-height:1.6;margin:7px 0}.row2{display:grid;grid-template-columns:1fr 1fr;gap:9px}.chiprow{display:flex;gap:7px;flex-wrap:wrap}.chiprow button{font-size:12px;padding:8px 10px}.chiprow button.active{border-color:#72baff;background:#1e4368}.line{height:1px;background:#28364c;margin:19px 0}.check{display:flex;gap:8px;align-items:center;font-size:12px;color:#c9d6e8}.check input{accent-color:#5da8ef}footer{font-size:11px;color:#7f93af;line-height:1.6;margin-top:18px}.status{display:inline-flex;gap:6px;align-items:center;color:#a6bad6;font-size:11px}.dot{height:7px;width:7px;border-radius:50%;background:#65d2ad}.dot.busy{background:#efb85c}.mobhead{display:none}#error{display:none;position:absolute;inset:auto 20px 20px;z-index:5;color:white;background:#792d3c;padding:13px;border-radius:8px}
+@media(max-width:740px){header{height:52px;padding:0 12px}.brandmark{width:25px;height:25px}.headright .desktop{display:none}h1{font-size:15px}main{display:flex;flex-direction:column}#viewport{min-height:42vh;flex:1}aside{height:35vh;min-height:220px;border-left:none;border-top:1px solid #29354b;padding:14px 17px}.hud{left:9px;bottom:9px;padding:7px 10px;font-size:10px}.floattools{right:8px;top:8px}.floattools button{width:34px;height:34px}}
+</style>
+</head>
+<body>
+<header><div class="brand"><div class="brandmark" aria-hidden="true"></div><div><h1>Mandelbrot Explorer</h1><small>Explore the edge of infinity</small></div></div><div class="headright"><span class="status"><span class="dot" id="dot"></span><span id="engine">Initializing</span></span><button class="desktop" id="save" title="Save view as PNG">Save image</button><button class="primary" id="reset">Reset view</button></div></header>
+<main><section id="viewport" aria-label="Interactive Mandelbrot set visualization"><canvas id="view"></canvas><div class="floattools"><button id="plus" aria-label="Zoom in">+</button><button id="minus" aria-label="Zoom out">−</button><button id="home" aria-label="Reset view" title="Reset view">⌂</button></div><div class="hud"><div><span class="dim">CENTER</span> <strong id="coords">−0.50 + 0.00i</strong></div><div><span class="dim">MAGNIFICATION</span> <strong id="zoom">1×</strong> &nbsp; <span class="dim">RENDER</span> <strong id="renderinfo">—</strong></div><div class="dim">Scroll to zoom · drag to pan · double-click to zoom</div></div><div id="error" role="alert"></div></section>
+<aside>
+<h2>Explore</h2>
+<div class="field"><div class="fieldlabel"><label for="iterations">Maximum iterations</label><output id="iterationsValue">250</output></div><input type="range" id="iterations" min="50" max="1500" step="25" value="250"><p class="hint">Higher values reveal finer detail, but take longer to render.</p></div>
+<div class="field"><div class="fieldlabel"><label for="detail">Render resolution</label><output id="detailValue">75%</output></div><input type="range" id="detail" min="25" max="100" step="5" value="75"><p class="hint">Reduce resolution for older devices. Uses pixel scaling, not page zoom.</p></div>
+<div class="field"><label for="palette" class="fieldlabel">Color palette</label><select id="palette"><option value="0">Ocean / gold</option><option value="1">Electric violet</option><option value="2">Ember</option><option value="3">Monochrome</option><option value="4">Rainbow</option><option value="5">Glacier</option></select></div>
+<div class="field"><div class="fieldlabel"><label for="colorshift">Color offset</label><output id="colorshiftValue">0</output></div><input type="range" id="colorshift" min="0" max="100" step="1" value="0"></div>
+<div class="field"><div class="fieldlabel"><label for="density">Color bands</label><output id="densityValue">1.0×</output></div><input type="range" id="density" min="2" max="80" step="1" value="16"></div>
+<label class="check"><input type="checkbox" id="smooth" checked> Smooth coloring</label>
+<div class="line"></div>
+<h2>Interesting places</h2><div class="chiprow"><button class="preset active" data-preset="0">Overview</button><button class="preset" data-preset="1">Seahorse valley</button><button class="preset" data-preset="2">Elephant valley</button><button class="preset" data-preset="3">Spiral</button><button class="preset" data-preset="4">Mini-brot</button></div>
+<div class="line"></div>
+<h2>Coordinates</h2><div class="row2 field"><div><label for="real" class="fieldlabel">Real</label><input type="number" id="real" step="any" value="-0.5"></div><div><label for="imag" class="fieldlabel">Imaginary</label><input type="number" id="imag" step="any" value="0"></div></div>
+<div class="field"><label for="span" class="fieldlabel">Horizontal span</label><input id="span" type="number" step="any" min="0.00000000000001" value="3.5"><p class="hint">Width of the complex plane visible in the viewport.</p></div><div class="row2"><button id="apply" class="primary">Go to position</button><button id="copy">Copy coordinates</button></div>
+<div class="line"></div>
+<h2>Performance</h2><label class="check"><input type="checkbox" id="gpu" checked> Use GPU when available</label><p class="hint" id="performance">WebGL for fast interactive rendering; CPU fallback renders progressively in small chunks.</p>
+<div class="row2"><button id="save2">Export PNG</button><button id="restore">Default settings</button></div>
+<footer>For precision beyond approximately 10¹³× magnification, standard browser floating-point math runs out of detail. Mouse wheel zoom is centered on the pointer; pinch zoom works on touchscreens.</footer>
+</aside></main>
+<script>
+(()=>{'use strict';
+const $=id=>document.getElementById(id), canvas=$('view'), viewport=$('viewport');
+const state={cx:-.5,cy:0,span:3.5,iter:250,res:.75,palette:0,shift:0,density:16,smooth:true,gpu:true};
+const initial={...state};const presets=[[-.5,0,3.5],[-.7435,.1314,.008],[-.75,.1,.045],[-.761574,-.0847596,.0025],[-1.25066,.02012,.0002]];
+let gl=null,program=null,uniforms=null,buffer=null,ctx=null,backend='',task=0,raf=0,renderTimer=0,drag=null,touches=new Map(),pinch=null,paletteLUT=null;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));const fmt=n=>Number(n).toPrecision(12).replace(/(?:\.0+|(?<=\d)0+)$/,'').replace(/\.$/,'');
+function status(s,busy=false){$('engine').textContent=s;$('dot').classList.toggle('busy',busy)}
+function updateLabels(){
+ $('coords').textContent=`${fmt(state.cx)} ${state.cy<0?'−':'+'} ${fmt(Math.abs(state.cy))}i`;
+ const mag=3.5/state.span;$('zoom').textContent=mag<1e4?mag.toLocaleString(undefined,{maximumFractionDigits:1})+'×':mag.toExponential(2)+'×';
+ $('iterationsValue').textContent=state.iter;$('detailValue').textContent=Math.round(state.res*100)+'%';$('colorshiftValue').textContent=String(Math.round(state.shift*100));$('densityValue').textContent=(state.density/16).toFixed(1)+'×';
+ $('real').value=state.cx;$('imag').value=state.cy;$('span').value=state.span;
+}
+function viewSize(){const r=viewport.getBoundingClientRect();return {w:Math.max(1,r.width),h:Math.max(1,r.height)}}
+function pixelToComplex(x,y){const {w,h}=viewSize();return [state.cx+(x/w-.5)*state.span,state.cy-(y-h/2)*state.span/w]}
+function zoomAt(f,x,y){const {w,h}=viewSize();const [re,im]=pixelToComplex(x,y);const ns=clamp(state.span/f,1e-14,1e7);const actual=state.span/ns;state.cx=re-(re-state.cx)/actual;state.cy=im-(im-state.cy)/actual;state.span=ns;updateLabels();scheduleRender(true)}
+function changePalette(){paletteLUT=createPalette();scheduleRender(false)}
+const palStops=[[[3,9,28],[18,53,105],[27,135,170],[224,185,111],[252,245,202]],[[9,7,32],[51,14,100],[137,67,201],[255,103,189],[244,209,247]],[[15,5,12],[82,15,30],[195,53,34],[255,169,43],[255,242,171]],[[6,6,8],[57,62,70],[135,143,155],[232,236,241],[255,255,255]],[[18,4,51],[38,92,205],[19,206,156],[247,210,64],[239,62,91]],[[3,16,34],[14,81,108],[61,174,184],[177,231,227],[247,253,251]]];
+function createPalette(){const lut=new Uint8Array(1024*3),st=palStops[state.palette];for(let i=0;i<1024;i++){let t=i/1024*st.length;let k=Math.floor(t)%st.length,f=t-k;let a=st[k],b=st[(k+1)%st.length];for(let c=0;c<3;c++)lut[i*3+c]=Math.round(a[c]*(1-f)+b[c]*f)}return lut}
+function colorAt(n,abs2,px,output,p){let i=p*4;if(n>=state.iter){output[i]=output[i+1]=output[i+2]=0;output[i+3]=255;return}let value=n;if(state.smooth&&abs2>1){value=n+1-Math.log2(Math.max(1e-12,.5*Math.log(abs2)));}const t=((value*state.density/32+state.shift)%1+1)%1,j=(Math.floor(t*1024)%1024)*3;output[i]=paletteLUT[j];output[i+1]=paletteLUT[j+1];output[i+2]=paletteLUT[j+2];output[i+3]=255}
+const vs=`attribute vec2 position; void main(){gl_Position=vec4(position,0.,1.);}`;
+const fs=`precision highp float;uniform vec2 u_resolution;uniform vec2 u_center;uniform float u_span;uniform int u_iter;uniform float u_shift;uniform float u_density;uniform float u_smooth;uniform vec3 u_pal[6];
+vec3 palette(float t){float pos=fract(t)*5.0;float k=floor(pos);float f=fract(pos);vec3 a=u_pal[0],b=u_pal[1];if(k<1.){a=u_pal[0];b=u_pal[1];}else if(k<2.){a=u_pal[1];b=u_pal[2];}else if(k<3.){a=u_pal[2];b=u_pal[3];}else if(k<4.){a=u_pal[3];b=u_pal[4];}else {a=u_pal[4];b=u_pal[0];}return mix(a,b,f);}
+void main(){vec2 c=u_center+(gl_FragCoord.xy-.5*u_resolution.xy)*(u_span/u_resolution.x);float x=0.,y=0.;int n=0;float mag=0.;
+// Cardioid and period-2 bulb rejection skips most interior pixels.
+float q=(c.x-.25)*(c.x-.25)+c.y*c.y;bool interior=q*(q+(c.x-.25))<=.25*c.y*c.y||(c.x+1.)*(c.x+1.)+c.y*c.y<=.0625;
+if(interior){gl_FragColor=vec4(0.,0.,0.,1.);return;}
+for(int i=0;i<1500;i++){if(i>=u_iter)break;float xx=x*x,yy=y*y;if(xx+yy>256.)break;y=2.*x*y+c.y;x=xx-yy+c.x;n++;mag=x*x+y*y;}
+if(n>=u_iter){gl_FragColor=vec4(0.,0.,0.,1.);return;}float v=float(n);if(u_smooth>.5&&mag>1.)v+=1.-log2(max(1e-10,.5*log(mag)));
+float t=v*u_density/32.+u_shift;gl_FragColor=vec4(palette(t),1.);
+}`;
+function compile(type,src){const sh=gl.createShader(type);gl.shaderSource(sh,src);gl.compileShader(sh);if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS)){let err=gl.getShaderInfoLog(sh);gl.deleteShader(sh);throw Error(err)}return sh}
+function initializeGL(){
+ if(!state.gpu)return false;try{
+ const g=canvas.getContext('webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true,depth:false,stencil:false,powerPreference:'low-power'})||canvas.getContext('experimental-webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true});if(!g)return false;gl=g;
+ const precision=gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER,gl.HIGH_FLOAT);if(!precision||precision.precision<16)throw Error('High-precision fragment math unavailable');
+ const v=compile(gl.VERTEX_SHADER,vs),f=compile(gl.FRAGMENT_SHADER,fs);program=gl.createProgram();gl.attachShader(program,v);gl.attachShader(program,f);gl.linkProgram(program);gl.deleteShader(v);gl.deleteShader(f);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));
+ gl.useProgram(program);buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);let loc=gl.getAttribLocation(program,'position');gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+ uniforms={};for(const key of ['resolution','center','span','iter','shift','density','smooth','pal[0]'])uniforms[key]=gl.getUniformLocation(program,'u_'+key);
+ backend='GPU';status('WebGL accelerated');return true;
+ }catch(e){console.warn('WebGL unavailable:',e);gl=null;return false}
+}
+function setupBackend(){cancelAnimationFrame(raf);cancelAnimationFrame(task);clearTimeout(renderTimer);task=0;backend='';gl=null;ctx=null;const old=canvas;const replacement=old.cloneNode(false);old.replaceWith(replacement);canvasRef= replacement;
+ if(!initializeCanvasGPU()){const fresh=canvasRef.cloneNode(false);canvasRef.replaceWith(fresh);canvasRef=fresh;initializeCanvasCPU()}scheduleRender(false)}
+let canvasRef=canvas;
+function initializeCanvasGPU(){if(!state.gpu)return false;let c=canvasRef;try{gl=c.getContext('webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true,depth:false,stencil:false,powerPreference:'low-power'})||c.getContext('experimental-webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true});if(!gl)return false;const prec=gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER,gl.HIGH_FLOAT);if(!prec||prec.precision<16)throw Error('Not enough fragment precision');let v=compile(gl.VERTEX_SHADER,vs),f=compile(gl.FRAGMENT_SHADER,fs);program=gl.createProgram();gl.attachShader(program,v);gl.attachShader(program,f);gl.linkProgram(program);gl.deleteShader(v);gl.deleteShader(f);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);let loc=gl.getAttribLocation(program,'position');gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);uniforms={};for(let k of ['resolution','center','span','iter','shift','density','smooth','pal[0]'])uniforms[k]=gl.getUniformLocation(program,'u_'+k);backend='GPU';status('WebGL accelerated');return true}catch(e){console.warn('Falling back to CPU:',e);gl=null;return false}}
+function initializeCanvasCPU(){ctx=canvasRef.getContext('2d',{alpha:false,willReadFrequently:false});backend='CPU';status('CPU progressive');}
+function canvasDimensions(){const {w,h}=viewSize();const scale=state.res;const maxpixels=1800000;const budget=Math.min(1,Math.sqrt(maxpixels/(w*h*scale*scale)));return [Math.max(1,Math.floor(w*scale*budget)),Math.max(1,Math.floor(h*scale*budget))]}
+function scheduleRender(interactive){clearTimeout(renderTimer);cancelAnimationFrame(task);task=0;if(interactive){renderTimer=setTimeout(render,35)}else render()}
+function render(){const [w,h]=canvasDimensions();canvasRef.width=w;canvasRef.height=h;$('renderinfo').textContent=`${w}×${h}`;if(backend==='GPU'){
+ try{gl.viewport(0,0,w,h);gl.useProgram(program);gl.uniform2f(uniforms.resolution,w,h);gl.uniform2f(uniforms.center,state.cx,state.cy);gl.uniform1f(uniforms.span,state.span);gl.uniform1i(uniforms.iter,state.iter);gl.uniform1f(uniforms.shift,state.shift);gl.uniform1f(uniforms.density,state.density);gl.uniform1f(uniforms.smooth,state.smooth?1:0);gl.uniform3fv(uniforms['pal[0]'],new Float32Array(palStops[state.palette].flat().map(v=>v/255)));gl.drawArrays(gl.TRIANGLES,0,6);status('WebGL accelerated')}
+ catch(e){console.warn(e);state.gpu=false;$('gpu').checked=false;setupBackend()}}
+ else renderCPU(w,h)}
+function renderCPU(w,h){const image=ctx.createImageData(w,h),pixels=image.data,iter=state.iter,cx=state.cx,cy=state.cy,span=state.span,dx=span/w,top=cy+(h/2)*dx;let row=0,token=++cpuToken;status('CPU rendering',true);
+ function batch(){if(token!==cpuToken)return;const start=performance.now();while(row<h&&(performance.now()-start)<13){let cImag=top-(row+.5)*dx;for(let x=0;x<w;x++){
+ let cr=cx+(x+.5-w/2)*dx,ci=cImag,q=(cr-.25)*(cr-.25)+ci*ci;let n=0,mag=0;
+ if(!(q*(q+(cr-.25))<=.25*ci*ci||(cr+1)*(cr+1)+ci*ci<=.0625)){
+ let zx=0,zy=0,zx2=0,zy2=0;while(n<iter&&zx2+zy2<=256){zy=2*zx*zy+ci;zx=zx2-zy2+cr;zx2=zx*zx;zy2=zy*zy;n++}mag=zx2+zy2;
+ }else n=iter;
+ colorAt(n,mag,null,pixels,row*w+x);
+ }row++}
+ if(token!==cpuToken)return;ctx.putImageData(image,0,0,0,0,w,row);if(row<h){status('CPU rendering '+Math.round(100*row/h)+'%',true);task=requestAnimationFrame(batch)}else{status('CPU progressive')}}task=requestAnimationFrame(batch)}
+let cpuToken=0;
+function cancelCPU(){cpuToken++;cancelAnimationFrame(task);task=0}
+const originalSchedule=scheduleRender;scheduleRender=function(interactive){cancelCPU();clearTimeout(renderTimer);if(interactive)renderTimer=setTimeout(render,35);else render()};
+function setPreset(idx){let p=presets[idx];state.cx=p[0];state.cy=p[1];state.span=p[2];document.querySelectorAll('.preset').forEach(e=>e.classList.toggle('active',+e.dataset.preset===idx));updateLabels();scheduleRender(false)}
+function handleRange(id,fn,output){$(id).addEventListener('input',e=>{fn(+e.target.value);updateLabels();scheduleRender(true)})}
+handleRange('iterations',v=>state.iter=v);handleRange('detail',v=>state.res=v/100);handleRange('colorshift',v=>state.shift=v/100);handleRange('density',v=>state.density=v);
+$('palette').addEventListener('change',e=>{state.palette=+e.target.value;changePalette()});$('smooth').addEventListener('change',e=>{state.smooth=e.target.checked;scheduleRender(false)});
+$('gpu').addEventListener('change',e=>{state.gpu=e.target.checked;setupBackend()});
+$('reset').onclick=$('home').onclick=()=>setPreset(0);$('plus').onclick=()=>{let {w,h}=viewSize();zoomAt(2,w/2,h/2)};$('minus').onclick=()=>{let {w,h}=viewSize();zoomAt(.5,w/2,h/2)};
+$('apply').onclick=()=>{let re=+$('real').value,im=+$('imag').value,span=+$('span').value;if(!Number.isFinite(re)||!Number.isFinite(im)||!Number.isFinite(span)||span<=0){alert('Enter valid coordinates and a positive span.');return}state.cx=re;state.cy=im;state.span=clamp(span,1e-14,1e7);document.querySelectorAll('.preset').forEach(e=>e.classList.remove('active'));updateLabels();scheduleRender(false)};
+$('copy').onclick=async()=>{let str=`Center: ${state.cx}, ${state.cy}i; horizontal span: ${state.span}`;try{await navigator.clipboard.writeText(str);$('copy').textContent='Copied!';setTimeout(()=>$('copy').textContent='Copy coordinates',1200)}catch(e){prompt('Copy coordinates:',str)}};
+$('restore').onclick=()=>{Object.assign(state,initial);$('iterations').value=state.iter;$('detail').value=state.res*100;$('palette').value=state.palette;$('colorshift').value=state.shift*100;$('density').value=state.density;$('smooth').checked=state.smooth;$('gpu').checked=state.gpu;paletteLUT=createPalette();setupBackend();setPreset(0)};
+function exportPNG(){if(backend==='GPU')gl.finish();try{canvasRef.toBlob(blob=>{if(!blob)return;let url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='mandelbrot-'+Date.now()+'.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000)},'image/png')}catch(e){alert('Unable to export image: '+e.message)}}$('save').onclick=$('save2').onclick=exportPNG;
+document.querySelectorAll('.preset').forEach(e=>e.addEventListener('click',()=>setPreset(+e.dataset.preset)));
+viewport.addEventListener('wheel',e=>{e.preventDefault();const r=viewport.getBoundingClientRect();zoomAt(Math.exp(-clamp(e.deltaY,-150,150)*.007),e.clientX-r.left,e.clientY-r.top)},{passive:false});
+viewport.addEventListener('dblclick',e=>{let r=viewport.getBoundingClientRect();zoomAt(2.5,e.clientX-r.left,e.clientY-r.top)});
+function points(){return [...touches.values()]}
+viewport.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;viewport.setPointerCapture(e.pointerId);touches.set(e.pointerId,{x:e.clientX,y:e.clientY});if(touches.size===1){drag={x:e.clientX,y:e.clientY,cx:state.cx,cy:state.cy};viewport.classList.add('dragging')}else if(touches.size===2){let [a,b]=points(),distance=Math.hypot(a.x-b.x,a.y-b.y);pinch={distance,span:state.span,cx:state.cx,cy:state.cy,midx:(a.x+b.x)/2,midy:(a.y+b.y)/2};drag=null}}, {passive:true});
+viewport.addEventListener('pointermove',e=>{if(!touches.has(e.pointerId))return;touches.set(e.pointerId,{x:e.clientX,y:e.clientY});const {w}=viewSize();if(touches.size===1&&drag){state.cx=drag.cx-(e.clientX-drag.x)*state.span/w;state.cy=drag.cy+(e.clientY-drag.y)*state.span/w;updateLabels();scheduleRender(true)}else if(touches.size===2&&pinch){let [a,b]=points(),distance=Math.max(1,Math.hypot(a.x-b.x,a.y-b.y));state.span=clamp(pinch.span*pinch.distance/distance,1e-14,1e7);let midx=(a.x+b.x)/2,midy=(a.y+b.y)/2;state.cx=pinch.cx-(midx-pinch.midx)*state.span/w;state.cy=pinch.cy+(midy-pinch.midy)*state.span/w;updateLabels();scheduleRender(true)}});
+function endPointer(e){touches.delete(e.pointerId);if(!touches.size){drag=null;pinch=null;viewport.classList.remove('dragging');scheduleRender(false)}else{drag=null;pinch=null}}viewport.addEventListener('pointerup',endPointer);viewport.addEventListener('pointercancel',endPointer);viewport.addEventListener('lostpointercapture',endPointer);
+window.addEventListener('keydown',e=>{if(e.target.matches('input,select'))return;let {w,h}=viewSize();if(e.key==='+'||e.key==='=')zoomAt(2,w/2,h/2);if(e.key==='-')zoomAt(.5,w/2,h/2);if(e.key==='0')setPreset(0)});
+let resizeTimer;new ResizeObserver(()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>scheduleRender(false),120)}).observe(viewport);
+window.addEventListener('webglcontextlost',e=>{e.preventDefault();state.gpu=false;$('gpu').checked=false;setTimeout(setupBackend,0)});
+paletteLUT=createPalette();updateLabels();setupBackend();
+})();
+</script>
+</body>
+</html>
