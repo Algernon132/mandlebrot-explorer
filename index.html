@@ -53,6 +53,7 @@ let gl=null,program=null,uniforms=null,buffer=null,ctx=null,backend='',task=0,ra
 let cpuSurface=null,cpuCtx=null,cpuToken=0;
 let escapeProgram=null,colorProgram=null,escapeUniforms=null,colorUniforms=null,escapeTexture=null,escapeFBO=null,escapeW=0,escapeH=0,escapeValid=false;
 let recolorTexture=null,recolorTextureW=0,recolorTextureH=0,recolorCPUValid=false;
+let animationPreview=null,animationCtx=null,animationCache=null;
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));const fmt=n=>Number(n).toPrecision(12).replace(/(?:\.0+|(?<=\d)0+)$/,'').replace(/\.$/,'');
 function status(s,busy=false){$('engine').textContent=s;$('dot').classList.toggle('busy',busy)}
@@ -65,7 +66,7 @@ function updateLabels(){
 function viewSize(){const r=viewport.getBoundingClientRect();return {w:Math.max(1,r.width),h:Math.max(1,r.height)}}
 function pixelToComplex(x,y){const {w,h}=viewSize();return [state.cx+(x/w-.5)*state.span,state.cy-(y-h/2)*state.span/w]}
 function zoomAt(f,x,y){const {w,h}=viewSize();const [re,im]=pixelToComplex(x,y);const ns=clamp(state.span/f,1e-12,1e7);const actual=state.span/ns;state.cx=re-(re-state.cx)/actual;state.cy=im-(im-state.cy)/actual;state.span=ns;updateLabels();scheduleRender(true)}
-function changePalette(){paletteLUT=createPalette();recolorOnly()}
+function changePalette(){paletteLUT=createPalette();if(colorMotion.playing)recolorAnimationFrame();else recolorOnly()}
 const palStops=[[[3,9,28],[18,53,105],[27,135,170],[224,185,111],[252,245,202]],[[9,7,32],[51,14,100],[137,67,201],[255,103,189],[244,209,247]],[[15,5,12],[82,15,30],[195,53,34],[255,169,43],[255,242,171]],[[6,6,8],[57,62,70],[135,143,155],[232,236,241],[255,255,255]],[[18,4,51],[38,92,205],[19,206,156],[247,210,64],[239,62,91]],[[3,16,34],[14,81,108],[61,174,184],[177,231,227],[247,253,251]]];
 function createPalette(){const lut=new Uint8Array(1024*3),st=palStops[state.palette];for(let i=0;i<1024;i++){let t=i/1024*st.length;let k=Math.floor(t)%st.length,f=t-k;let a=st[k],b=st[(k+1)%st.length];for(let c=0;c<3;c++)lut[i*3+c]=Math.round(a[c]*(1-f)+b[c]*f)}return lut}
 function colorAt(n,abs2,px,output,p){let i=p*4;if(n>=state.iter){output[i]=output[i+1]=output[i+2]=0;output[i+3]=255;return}let value=n;if(state.smooth&&abs2>1){value=n+1-Math.log2(Math.max(1e-12,.5*Math.log(abs2)));}const t=((value*state.density/32+state.shift)%1+1)%1,j=(Math.floor(t*1024)%1024)*3;output[i]=paletteLUT[j];output[i+1]=paletteLUT[j+1];output[i+2]=paletteLUT[j+2];output[i+3]=255}
@@ -161,7 +162,7 @@ function initializeGL(){
  backend='GPU';status('WebGL accelerated');return true;
  }catch(e){console.warn('WebGL unavailable:',e);gl=null;return false}
 }
-function setupBackend(){if(cpuOverlay){cpuOverlay.remove();cpuOverlay=null;}cpuSurface=null;cpuCtx=null;cpuCache=null;cancelCPU();cancelAnimationFrame(raf);cancelAnimationFrame(task);clearTimeout(renderTimer);task=0;backend='';gl=null;ctx=null;escapeProgram=null;colorProgram=null;escapeTexture=null;escapeFBO=null;escapeW=0;escapeH=0;escapeValid=false;recolorTexture=null;recolorCPUValid=false;const old=canvasRef;const replacement=old.cloneNode(false);old.replaceWith(replacement);canvasRef=replacement;
+function setupBackend(){hideAnimationPreview();if(cpuOverlay){cpuOverlay.remove();cpuOverlay=null;}cpuSurface=null;cpuCtx=null;cpuCache=null;cancelCPU();cancelAnimationFrame(raf);cancelAnimationFrame(task);clearTimeout(renderTimer);task=0;backend='';gl=null;ctx=null;escapeProgram=null;colorProgram=null;escapeTexture=null;escapeFBO=null;escapeW=0;escapeH=0;escapeValid=false;recolorTexture=null;recolorCPUValid=false;const old=canvasRef;const replacement=old.cloneNode(false);old.replaceWith(replacement);canvasRef=replacement;
  if(!initializeCanvasGPU()){const fresh=canvasRef.cloneNode(false);canvasRef.replaceWith(fresh);canvasRef=fresh;initializeCanvasCPU()}scheduleRender(false)}
 let canvasRef=canvas;
 function initializeCanvasGPU(){if(!state.gpu)return false;let c=canvasRef;try{gl=c.getContext('webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true,depth:false,stencil:false,powerPreference:'low-power'})||c.getContext('experimental-webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true});if(!gl)return false;const prec=gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER,gl.HIGH_FLOAT);if(!prec||prec.precision<16)throw Error('Not enough fragment precision');let v=compile(gl.VERTEX_SHADER,vs),f=compile(gl.FRAGMENT_SHADER,fs);program=gl.createProgram();gl.attachShader(program,v);gl.attachShader(program,f);gl.linkProgram(program);gl.deleteShader(v);gl.deleteShader(f);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);let loc=gl.getAttribLocation(program,'position');gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);uniforms={};for(let k of ['resolution','center','span','iter','shift','density','smooth','pal[0]'])uniforms[k]=gl.getUniformLocation(program,'u_'+k);backend='GPU';initializePaletteGPU();status('WebGL accelerated');return true}catch(e){console.warn('Falling back to CPU:',e);gl=null;return false}}
@@ -196,6 +197,7 @@ function canvasDimensions(){
 }
 function scheduleRender(interactive){clearTimeout(renderTimer);cancelAnimationFrame(task);task=0;if(interactive){renderTimer=setTimeout(render,35)}else render()}
 function render(){
+ hideAnimationPreview();
  cancelCPU();
  const [w,h]=canvasDimensions();
  if(canvasRef.width!==w)canvasRef.width=w;
@@ -298,6 +300,7 @@ function primeCPUPaletteTexture(){
  }catch(e){console.warn('GPU CPU-color cache unavailable:',e);recolorCPUValid=false;return false;}
 }
 function recolorCPU(){
+ hideAnimationPreview();
  const cache=cpuCache;
  if(!cache||!cache.complete)return false;
  if(gl&&colorProgram&&(recolorCPUValid||primeCPUPaletteTexture())){if(cpuOverlay)cpuOverlay.style.display='none';presentPaletteGPU(cache.w,cache.h,recolorTexture);return true;}
@@ -328,6 +331,67 @@ function recolorOnly(forceRecompute=false){
  if(cpuRendering&&!forceRecompute)return;
  scheduleRender(true);
 }
+// CPU color animation gets its own *small* preview buffer. The full-sized
+// Float64 escape cache is sampled just once, not scanned at every animation
+// frame. On pause we restore the full-resolution image from that cache.
+function hideAnimationPreview(){
+ if(animationPreview)animationPreview.style.display='none';
+ animationCache=null;
+}
+function animateCPUColors(){
+ const c=cpuCache;
+ if(!c||!c.complete)return false;
+ const maxPreviewPixels=180000; // about 600 x 300; bounded cost on old phones
+ const factor=Math.min(1,Math.sqrt(maxPreviewPixels/(c.w*c.h)));
+ const w=Math.max(1,Math.round(c.w*factor));
+ const h=Math.max(1,Math.round(c.h*factor));
+ if(!animationPreview){
+  animationPreview=document.createElement('canvas');
+  animationPreview.style.cssText='position:absolute;inset:0;width:100%;height:100%;pointer-events:none;image-rendering:auto;';
+  // Keep interactive fullscreen/zoom controls on top of the animation canvas.
+  viewport.insertBefore(animationPreview,viewport.querySelector('.floattools'));
+  animationCtx=animationPreview.getContext('2d',{alpha:false});
+ }
+ if(!animationCache||animationCache.source!==c||animationCache.w!==w||animationCache.h!==h||animationCache.density!==state.density){
+  animationPreview.width=w;animationPreview.height=h;
+  const phase=new Uint16Array(w*h),src=c.values,d=state.density/32;
+  for(let y=0;y<h;y++){
+   const row=Math.min(c.h-1,Math.floor((y+.5)*c.h/h))*c.w;
+   for(let x=0;x<w;x++){
+    const v=src[row+Math.min(c.w-1,Math.floor((x+.5)*c.w/w))];
+    phase[y*w+x]=v<0?65535:Math.floor((((v*d)%1+1)%1)*1024)&1023;
+   }
+  }
+  const image=animationCtx.createImageData(w,h);
+  for(let i=3;i<image.data.length;i+=4)image.data[i]=255;
+  animationCache={source:c,w,h,density:state.density,phase,image};
+ }
+ animationPreview.style.display='block';
+ const {phase,image}=animationCache,pixels=image.data;
+ const offset=Math.floor(state.shift*1024)&1023,lut=paletteLUT;
+ for(let i=0,j=0;i<phase.length;i++,j+=4){
+  const k=phase[i];
+  if(k===65535){pixels[j]=pixels[j+1]=pixels[j+2]=0;continue;}
+  const color=((k+offset)&1023)*3;
+  pixels[j]=lut[color];pixels[j+1]=lut[color+1];pixels[j+2]=lut[color+2];
+ }
+ animationCtx.putImageData(image,0,0);
+ return true;
+}
+function recolorAnimationFrame(){
+ // These branches never recompute any Mandelbrot orbits.
+ if(escapeValid&&gl&&colorProgram&&state.iter<=GPU_ITER_LIMIT&&escapeW===canvasRef.width&&escapeH===canvasRef.height){
+  hideAnimationPreview();presentPaletteGPU(escapeW,escapeH);return true;
+ }
+ if(cpuCache?.complete){
+  if(gl&&colorProgram&&(recolorCPUValid||primeCPUPaletteTexture())){
+   hideAnimationPreview();presentPaletteGPU(cpuCache.w,cpuCache.h,recolorTexture);return true;
+  }
+  return animateCPUColors();
+ }
+ // Wait for the current progressive render. Do not schedule repeated renders.
+ return false;
+}
 // Color animation never changes the view: only the cached palette is shaded.
 // requestAnimationFrame syncs to 60/90/120 Hz displays when GPU performance allows.
 function stopColors(){
@@ -336,6 +400,7 @@ function stopColors(){
  colorMotion.frame=0;colorMotion.last=0;
  $('colorPlay').textContent='▶ Animate colors';$('colorPlay').setAttribute('aria-pressed','false');
  $('colorStatus').textContent='Paused';
+ if(animationPreview&&animationPreview.style.display!=='none'&&cpuCache?.complete)recolorCPU();
 }
 function colorFrame(now){
  if(!colorMotion.playing)return;
@@ -343,12 +408,12 @@ function colorFrame(now){
  colorMotion.last=now;
  state.shift=(colorMotion.origin+colorMotion.elapsed*.075)%1;
  $('colorshift').value=Math.round(state.shift*100);
- recolorOnly();
+ const drew=recolorAnimationFrame();
+ if(drew)colorMotion.fpsSamples++;
  if(now-colorMotion.fpsStart>=1000){
-  $('colorStatus').textContent=`Color cycling · ${Math.round(colorMotion.fpsSamples*1000/(now-colorMotion.fpsStart))} fps`;
+  $('colorStatus').textContent=colorMotion.fpsSamples?`Color cycling · ${Math.round(colorMotion.fpsSamples*1000/(now-colorMotion.fpsStart))} rendered fps`:'Waiting for fractal render…';
   colorMotion.fpsStart=now;colorMotion.fpsSamples=0;
  }
- colorMotion.fpsSamples++;
  colorMotion.frame=requestAnimationFrame(colorFrame);
 }
 function toggleColors(){
