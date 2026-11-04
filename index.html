@@ -53,6 +53,7 @@ let gl=null,program=null,uniforms=null,buffer=null,ctx=null,backend='',task=0,ra
 let cpuSurface=null,cpuCtx=null,cpuToken=0;
 let escapeProgram=null,colorProgram=null,escapeUniforms=null,colorUniforms=null,escapeTexture=null,escapeFBO=null,escapeW=0,escapeH=0,escapeValid=false;
 let recolorTexture=null,recolorTextureW=0,recolorTextureH=0,recolorCPUValid=false;
+let directColorFallback=false;
 let animationPreview=null,animationCtx=null,animationCache=null;
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));const fmt=n=>Number(n).toPrecision(12).replace(/(?:\.0+|(?<=\d)0+)$/,'').replace(/\.$/,'');
@@ -162,7 +163,7 @@ function initializeGL(){
  backend='GPU';status('WebGL accelerated');return true;
  }catch(e){console.warn('WebGL unavailable:',e);gl=null;return false}
 }
-function setupBackend(){hideAnimationPreview();if(cpuOverlay){cpuOverlay.remove();cpuOverlay=null;}cpuSurface=null;cpuCtx=null;cpuCache=null;cancelCPU();cancelAnimationFrame(raf);cancelAnimationFrame(task);clearTimeout(renderTimer);task=0;backend='';gl=null;ctx=null;escapeProgram=null;colorProgram=null;escapeTexture=null;escapeFBO=null;escapeW=0;escapeH=0;escapeValid=false;recolorTexture=null;recolorCPUValid=false;const old=canvasRef;const replacement=old.cloneNode(false);old.replaceWith(replacement);canvasRef=replacement;
+function setupBackend(){directColorFallback=false;hideAnimationPreview();if(cpuOverlay){cpuOverlay.remove();cpuOverlay=null;}cpuSurface=null;cpuCtx=null;cpuCache=null;cancelCPU();cancelAnimationFrame(raf);cancelAnimationFrame(task);clearTimeout(renderTimer);task=0;backend='';gl=null;ctx=null;escapeProgram=null;colorProgram=null;escapeTexture=null;escapeFBO=null;escapeW=0;escapeH=0;escapeValid=false;recolorTexture=null;recolorCPUValid=false;const old=canvasRef;const replacement=old.cloneNode(false);old.replaceWith(replacement);canvasRef=replacement;
  if(!initializeCanvasGPU()){const fresh=canvasRef.cloneNode(false);canvasRef.replaceWith(fresh);canvasRef=fresh;initializeCanvasCPU()}scheduleRender(false)}
 let canvasRef=canvas;
 function initializeCanvasGPU(){if(!state.gpu)return false;let c=canvasRef;try{gl=c.getContext('webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true,depth:false,stencil:false,powerPreference:'low-power'})||c.getContext('experimental-webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true});if(!gl)return false;const prec=gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER,gl.HIGH_FLOAT);if(!prec||prec.precision<16)throw Error('Not enough fragment precision');let v=compile(gl.VERTEX_SHADER,vs),f=compile(gl.FRAGMENT_SHADER,fs);program=gl.createProgram();gl.attachShader(program,v);gl.attachShader(program,f);gl.linkProgram(program);gl.deleteShader(v);gl.deleteShader(f);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);let loc=gl.getAttribLocation(program,'position');gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);uniforms={};for(let k of ['resolution','center','span','iter','shift','density','smooth','pal[0]'])uniforms[k]=gl.getUniformLocation(program,'u_'+k);backend='GPU';initializePaletteGPU();status('WebGL accelerated');return true}catch(e){console.warn('Falling back to CPU:',e);gl=null;return false}}
@@ -378,6 +379,37 @@ function animateCPUColors(){
  animationCtx.putImageData(image,0,0);
  return true;
 }
+// Some mobile WebGL drivers reject the auxiliary RGBA framebuffer shader even
+// though the original Mandelbrot shader works. Never leave the animation idle:
+// use the proven direct shader at an adaptive, low-cost animation resolution.
+function drawDirectAnimatedGPU(){
+ if(!gl||!program||backend!=='GPU'||state.iter>GPU_ITER_LIMIT)return false;
+ const {w:cssW,h:cssH}=viewSize();
+ // About 160k fragments: a bounded per-frame cost even on older phones.
+ const scale=Math.min(1,Math.sqrt(160000/(cssW*cssH)));
+ const w=Math.max(1,Math.round(cssW*scale)),h=Math.max(1,Math.round(cssH*scale));
+ try{
+  if(canvasRef.width!==w||canvasRef.height!==h){
+   canvasRef.width=w;canvasRef.height=h;
+   escapeValid=false;
+  }
+  if(cpuOverlay)cpuOverlay.style.display='none';
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,w,h);
+  activateProgram(program);
+  gl.uniform2f(uniforms.resolution,w,h);
+  gl.uniform2f(uniforms.center,state.cx,state.cy);
+  gl.uniform1f(uniforms.span,state.span);
+  gl.uniform1i(uniforms.iter,state.iter);
+  gl.uniform1f(uniforms.shift,state.shift);
+  gl.uniform1f(uniforms.density,state.density);
+  gl.uniform1f(uniforms.smooth,state.smooth?1:0);
+  gl.uniform3fv(uniforms['pal[0]'],new Float32Array(palStops[state.palette].flat().map(v=>v/255)));
+  gl.drawArrays(gl.TRIANGLES,0,6);
+  directColorFallback=true;
+  return true;
+ }catch(e){console.warn('Animated WebGL fallback unavailable:',e);return false;}
+}
 function recolorAnimationFrame(){
  // These branches never recompute any Mandelbrot orbits.
  if(escapeValid&&gl&&colorProgram&&state.iter<=GPU_ITER_LIMIT&&escapeW===canvasRef.width&&escapeH===canvasRef.height){
@@ -389,7 +421,10 @@ function recolorAnimationFrame(){
   }
   return animateCPUColors();
  }
- // Wait for the current progressive render. Do not schedule repeated renders.
+ // GPU cache may be unavailable on mobile WebGL, even if the original shader works.
+ // Fall back to continuously drawing its small, fast direct-shader preview.
+ if(backend==='GPU'&&state.iter<=GPU_ITER_LIMIT&&!requiresDeepPrecision(canvasDimensions()[0]))return drawDirectAnimatedGPU();
+ // Wait for the current progressive 64-bit CPU render.
  return false;
 }
 // Color animation never changes the view: only the cached palette is shaded.
@@ -401,6 +436,7 @@ function stopColors(){
  $('colorPlay').textContent='▶ Animate colors';$('colorPlay').setAttribute('aria-pressed','false');
  $('colorStatus').textContent='Paused';
  if(animationPreview&&animationPreview.style.display!=='none'&&cpuCache?.complete)recolorCPU();
+ if(directColorFallback){directColorFallback=false;scheduleRender(false);}
 }
 function colorFrame(now){
  if(!colorMotion.playing)return;
