@@ -130,7 +130,7 @@ function renderCPU(w,h){
  }
  const display=ctx||cpuOverlay.getContext('2d',{alpha:false});
  const image=cpuCtx.createImageData(w,h),pixels=image.data,iter=state.iter,cx=state.cx,cy=state.cy,span=state.span,dx=span/w,top=cy+(h/2)*dx;
- let row=0,token=++cpuToken;
+ let row=0,committedRow=0,token=++cpuToken;
  status('64-bit deep zoom · rendering',true);
  function batch(){if(token!==cpuToken)return;const start=performance.now();while(row<h&&(performance.now()-start)<12){
   let cImag=top-(row+.5)*dx;
@@ -143,9 +143,10 @@ function renderCPU(w,h){
   }row++;
  }
  if(token!==cpuToken)return;
- cpuCtx.putImageData(image,0,0,0,0,w,row);
- // Draw only the newly completed portion; avoid repeatedly copying the entire image.
- display.drawImage(cpuSurface,0,0,w,row,0,0,w,row);
+ cpuCtx.putImageData(image,0,0,0,committedRow,w,row-committedRow);
+ // Copy only the newly completed stripe; do not recopy all prior rows.
+ display.drawImage(cpuSurface,0,committedRow,w,row-committedRow,0,committedRow,w,row-committedRow);
+ committedRow=row;
  if(row<h){status('64-bit deep zoom · '+Math.round(100*row/h)+'%',true);task=requestAnimationFrame(batch)}
  else status('64-bit deep zoom');
  }
