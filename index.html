@@ -19,7 +19,7 @@ aside{background:#101829;border-left:1px solid #29354b;overflow:auto;padding:19p
 </head>
 <body>
 <header><div class="brand"><div class="brandmark" aria-hidden="true"></div><div><h1>Mandelbrot Explorer</h1><small>Explore the edge of infinity</small></div></div><div class="headright"><span class="status"><span class="dot" id="dot"></span><span id="engine">Initializing</span></span><button class="desktop" id="save" title="Save view as PNG">Save image</button><button class="primary" id="reset">Reset view</button></div></header>
-<main><section id="viewport" aria-label="Interactive Mandelbrot set visualization"><canvas id="view"></canvas><div class="floattools"><button id="plus" aria-label="Zoom in">+</button><button id="minus" aria-label="Zoom out">−</button><button id="home" aria-label="Reset view" title="Reset view">⌂</button></div><div class="hud"><div><span class="dim">CENTER</span> <strong id="coords">−0.50 + 0.00i</strong></div><div><span class="dim">MAGNIFICATION</span> <strong id="zoom">1×</strong> &nbsp; <span class="dim">RENDER</span> <strong id="renderinfo">—</strong></div><div class="dim">Scroll to zoom · drag to pan · double-click to zoom</div></div><div id="error" role="alert"></div></section>
+<main><section id="viewport" aria-label="Interactive Mandelbrot set visualization"><canvas id="view"></canvas><div class="floattools"><button id="plus" aria-label="Zoom in">+</button><button id="minus" aria-label="Zoom out">−</button><button id="home" aria-label="Reset view" title="Reset view">⌂</button></div><div class="hud"><div><span class="dim">CENTER</span> <strong id="coords">−0.50 + 0.00i</strong></div><div><span class="dim">MAGNIFICATION</span> <strong id="zoom">1×</strong> &nbsp; <span class="dim">RENDER</span> <strong id="renderinfo">—</strong> &nbsp; <span class="dim">PRECISION</span> <strong id="precisioninfo">—</strong></div><div class="dim">Scroll to zoom · drag to pan · double-click to zoom</div></div><div id="error" role="alert"></div></section>
 <aside>
 <h2>Explore</h2>
 <div class="field"><div class="fieldlabel"><label for="iterations">Maximum iterations</label><output id="iterationsValue">250</output></div><input type="range" id="iterations" min="50" max="1500" step="25" value="250"><p class="hint">Higher values reveal finer detail, but take longer to render.</p></div>
@@ -32,11 +32,11 @@ aside{background:#101829;border-left:1px solid #29354b;overflow:auto;padding:19p
 <h2>Interesting places</h2><div class="chiprow"><button class="preset active" data-preset="0">Overview</button><button class="preset" data-preset="1">Seahorse valley</button><button class="preset" data-preset="2">Elephant valley</button><button class="preset" data-preset="3">Spiral</button><button class="preset" data-preset="4">Mini-brot</button></div>
 <div class="line"></div>
 <h2>Coordinates</h2><div class="row2 field"><div><label for="real" class="fieldlabel">Real</label><input type="number" id="real" step="any" value="-0.5"></div><div><label for="imag" class="fieldlabel">Imaginary</label><input type="number" id="imag" step="any" value="0"></div></div>
-<div class="field"><label for="span" class="fieldlabel">Horizontal span</label><input id="span" type="number" step="any" min="0.00000000000001" value="3.5"><p class="hint">Width of the complex plane visible in the viewport.</p></div><div class="row2"><button id="apply" class="primary">Go to position</button><button id="copy">Copy coordinates</button></div>
+<div class="field"><label for="span" class="fieldlabel">Horizontal span</label><input id="span" type="number" step="any" min="0.000000000001" value="3.5"><p class="hint">Width of the complex plane visible in the viewport.</p></div><div class="row2"><button id="apply" class="primary">Go to position</button><button id="copy">Copy coordinates</button></div>
 <div class="line"></div>
-<h2>Performance</h2><label class="check"><input type="checkbox" id="gpu" checked> Use GPU when available</label><p class="hint" id="performance">WebGL for fast interactive rendering; CPU fallback renders progressively in small chunks.</p>
+<h2>Performance</h2><label class="check"><input type="checkbox" id="gpu" checked> Use GPU when precision permits</label><p class="hint" id="performance">Automatic precision: fast WebGL for wide views and 64-bit CPU calculation for deep zooms. Deep zooms may take longer to render.</p>
 <div class="row2"><button id="save2">Export PNG</button><button id="restore">Default settings</button></div>
-<footer>For precision beyond approximately 10¹³× magnification, standard browser floating-point math runs out of detail. Mouse wheel zoom is centered on the pointer; pinch zoom works on touchscreens.</footer>
+<footer>Automatic deep-zoom precision avoids GPU coordinate banding. Standard 64-bit numbers eventually lose pixel detail near 10¹²× magnification; arbitrary-precision methods are needed to go farther. Mouse wheel zoom is centered on the pointer; pinch zoom works on touchscreens.</footer>
 </aside></main>
 <script>
 (()=>{'use strict';
@@ -44,6 +44,7 @@ const $=id=>document.getElementById(id), canvas=$('view'), viewport=$('viewport'
 const state={cx:-.5,cy:0,span:3.5,iter:250,res:.75,palette:0,shift:0,density:16,smooth:true,gpu:true};
 const initial={...state};const presets=[[-.5,0,3.5],[-.7435,.1314,.008],[-.75,.1,.045],[-.761574,-.0847596,.0025],[-1.25066,.02012,.0002]];
 let gl=null,program=null,uniforms=null,buffer=null,ctx=null,backend='',task=0,raf=0,renderTimer=0,drag=null,touches=new Map(),pinch=null,paletteLUT=null;
+let cpuSurface=null,cpuCtx=null,cpuToken=0;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));const fmt=n=>Number(n).toPrecision(12).replace(/(?:\.0+|(?<=\d)0+)$/,'').replace(/\.$/,'');
 function status(s,busy=false){$('engine').textContent=s;$('dot').classList.toggle('busy',busy)}
 function updateLabels(){
@@ -54,7 +55,7 @@ function updateLabels(){
 }
 function viewSize(){const r=viewport.getBoundingClientRect();return {w:Math.max(1,r.width),h:Math.max(1,r.height)}}
 function pixelToComplex(x,y){const {w,h}=viewSize();return [state.cx+(x/w-.5)*state.span,state.cy-(y-h/2)*state.span/w]}
-function zoomAt(f,x,y){const {w,h}=viewSize();const [re,im]=pixelToComplex(x,y);const ns=clamp(state.span/f,1e-14,1e7);const actual=state.span/ns;state.cx=re-(re-state.cx)/actual;state.cy=im-(im-state.cy)/actual;state.span=ns;updateLabels();scheduleRender(true)}
+function zoomAt(f,x,y){const {w,h}=viewSize();const [re,im]=pixelToComplex(x,y);const ns=clamp(state.span/f,1e-12,1e7);const actual=state.span/ns;state.cx=re-(re-state.cx)/actual;state.cy=im-(im-state.cy)/actual;state.span=ns;updateLabels();scheduleRender(true)}
 function changePalette(){paletteLUT=createPalette();scheduleRender(false)}
 const palStops=[[[3,9,28],[18,53,105],[27,135,170],[224,185,111],[252,245,202]],[[9,7,32],[51,14,100],[137,67,201],[255,103,189],[244,209,247]],[[15,5,12],[82,15,30],[195,53,34],[255,169,43],[255,242,171]],[[6,6,8],[57,62,70],[135,143,155],[232,236,241],[255,255,255]],[[18,4,51],[38,92,205],[19,206,156],[247,210,64],[239,62,91]],[[3,16,34],[14,81,108],[61,174,184],[177,231,227],[247,253,251]]];
 function createPalette(){const lut=new Uint8Array(1024*3),st=palStops[state.palette];for(let i=0;i<1024;i++){let t=i/1024*st.length;let k=Math.floor(t)%st.length,f=t-k;let a=st[k],b=st[(k+1)%st.length];for(let c=0;c<3;c++)lut[i*3+c]=Math.round(a[c]*(1-f)+b[c]*f)}return lut}
@@ -81,27 +82,76 @@ function initializeGL(){
  backend='GPU';status('WebGL accelerated');return true;
  }catch(e){console.warn('WebGL unavailable:',e);gl=null;return false}
 }
-function setupBackend(){cancelAnimationFrame(raf);cancelAnimationFrame(task);clearTimeout(renderTimer);task=0;backend='';gl=null;ctx=null;const old=canvas;const replacement=old.cloneNode(false);old.replaceWith(replacement);canvasRef= replacement;
+function setupBackend(){if(cpuOverlay){cpuOverlay.remove();cpuOverlay=null;}cpuSurface=null;cpuCtx=null;cancelCPU();cancelAnimationFrame(raf);cancelAnimationFrame(task);clearTimeout(renderTimer);task=0;backend='';gl=null;ctx=null;const old=canvasRef;const replacement=old.cloneNode(false);old.replaceWith(replacement);canvasRef=replacement;
  if(!initializeCanvasGPU()){const fresh=canvasRef.cloneNode(false);canvasRef.replaceWith(fresh);canvasRef=fresh;initializeCanvasCPU()}scheduleRender(false)}
 let canvasRef=canvas;
 function initializeCanvasGPU(){if(!state.gpu)return false;let c=canvasRef;try{gl=c.getContext('webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true,depth:false,stencil:false,powerPreference:'low-power'})||c.getContext('experimental-webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true});if(!gl)return false;const prec=gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER,gl.HIGH_FLOAT);if(!prec||prec.precision<16)throw Error('Not enough fragment precision');let v=compile(gl.VERTEX_SHADER,vs),f=compile(gl.FRAGMENT_SHADER,fs);program=gl.createProgram();gl.attachShader(program,v);gl.attachShader(program,f);gl.linkProgram(program);gl.deleteShader(v);gl.deleteShader(f);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);let loc=gl.getAttribLocation(program,'position');gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);uniforms={};for(let k of ['resolution','center','span','iter','shift','density','smooth','pal[0]'])uniforms[k]=gl.getUniformLocation(program,'u_'+k);backend='GPU';status('WebGL accelerated');return true}catch(e){console.warn('Falling back to CPU:',e);gl=null;return false}}
-function initializeCanvasCPU(){ctx=canvasRef.getContext('2d',{alpha:false,willReadFrequently:false});backend='CPU';status('CPU progressive');}
+function initializeCanvasCPU(){
+ // Once WebGL is initialized, its canvas cannot get a 2D context. Use an
+ // off-screen 2D surface and upload its completed stripes into the WebGL canvas.
+ cpuSurface=document.createElement('canvas');cpuCtx=cpuSurface.getContext('2d',{alpha:false});
+ if(!gl){ctx=canvasRef.getContext('2d',{alpha:false});backend='CPU'}
+ else {ctx=null;backend='GPU'}
+}
+// A highp WebGL float is normally IEEE-754 single precision (about 24 bits).
+// Switch when adjacent pixels would be separated by fewer than ~32 float ULPs.
+// This conservative margin prevents the blocky coordinate/iteration artifacts.
+function requiresDeepPrecision(w){
+ if(!state.gpu||!gl)return true;
+ const magnitude=Math.max(Math.abs(state.cx),Math.abs(state.cy),0.00000001);
+ const ulp=Math.pow(2,Math.floor(Math.log2(magnitude))-23);
+ return state.span/w<ulp*32;
+}
 function canvasDimensions(){const {w,h}=viewSize();const scale=state.res;const maxpixels=1800000;const budget=Math.min(1,Math.sqrt(maxpixels/(w*h*scale*scale)));return [Math.max(1,Math.floor(w*scale*budget)),Math.max(1,Math.floor(h*scale*budget))]}
 function scheduleRender(interactive){clearTimeout(renderTimer);cancelAnimationFrame(task);task=0;if(interactive){renderTimer=setTimeout(render,35)}else render()}
-function render(){const [w,h]=canvasDimensions();canvasRef.width=w;canvasRef.height=h;$('renderinfo').textContent=`${w}×${h}`;if(backend==='GPU'){
- try{gl.viewport(0,0,w,h);gl.useProgram(program);gl.uniform2f(uniforms.resolution,w,h);gl.uniform2f(uniforms.center,state.cx,state.cy);gl.uniform1f(uniforms.span,state.span);gl.uniform1i(uniforms.iter,state.iter);gl.uniform1f(uniforms.shift,state.shift);gl.uniform1f(uniforms.density,state.density);gl.uniform1f(uniforms.smooth,state.smooth?1:0);gl.uniform3fv(uniforms['pal[0]'],new Float32Array(palStops[state.palette].flat().map(v=>v/255)));gl.drawArrays(gl.TRIANGLES,0,6);status('WebGL accelerated')}
- catch(e){console.warn(e);state.gpu=false;$('gpu').checked=false;setupBackend()}}
- else renderCPU(w,h)}
-function renderCPU(w,h){const image=ctx.createImageData(w,h),pixels=image.data,iter=state.iter,cx=state.cx,cy=state.cy,span=state.span,dx=span/w,top=cy+(h/2)*dx;let row=0,token=++cpuToken;status('CPU rendering',true);
- function batch(){if(token!==cpuToken)return;const start=performance.now();while(row<h&&(performance.now()-start)<13){let cImag=top-(row+.5)*dx;for(let x=0;x<w;x++){
- let cr=cx+(x+.5-w/2)*dx,ci=cImag,q=(cr-.25)*(cr-.25)+ci*ci;let n=0,mag=0;
- if(!(q*(q+(cr-.25))<=.25*ci*ci||(cr+1)*(cr+1)+ci*ci<=.0625)){
- let zx=0,zy=0,zx2=0,zy2=0;while(n<iter&&zx2+zy2<=256){zy=2*zx*zy+ci;zx=zx2-zy2+cr;zx2=zx*zx;zy2=zy*zy;n++}mag=zx2+zy2;
- }else n=iter;
- colorAt(n,mag,null,pixels,row*w+x);
- }row++}
- if(token!==cpuToken)return;ctx.putImageData(image,0,0,0,0,w,row);if(row<h){status('CPU rendering '+Math.round(100*row/h)+'%',true);task=requestAnimationFrame(batch)}else{status('CPU progressive')}}task=requestAnimationFrame(batch)}
-let cpuToken=0;
+function render(){
+ cancelCPU();
+ const [w,h]=canvasDimensions();canvasRef.width=w;canvasRef.height=h;
+ $('renderinfo').textContent=`${w}×${h}`;
+ const deep=requiresDeepPrecision(w);
+ $('precisioninfo').textContent=deep?'64-bit':'GPU 32-bit';
+ if(cpuOverlay)cpuOverlay.style.display=deep?'block':'none';
+ if(!deep&&backend==='GPU'){
+  try{gl.viewport(0,0,w,h);gl.useProgram(program);gl.uniform2f(uniforms.resolution,w,h);gl.uniform2f(uniforms.center,state.cx,state.cy);gl.uniform1f(uniforms.span,state.span);gl.uniform1i(uniforms.iter,state.iter);gl.uniform1f(uniforms.shift,state.shift);gl.uniform1f(uniforms.density,state.density);gl.uniform1f(uniforms.smooth,state.smooth?1:0);gl.uniform3fv(uniforms['pal[0]'],new Float32Array(palStops[state.palette].flat().map(v=>v/255)));gl.drawArrays(gl.TRIANGLES,0,6);status('WebGL accelerated')}
+  catch(e){console.warn(e);state.gpu=false;$('gpu').checked=false;setupBackend()}
+ }else renderCPU(w,h);
+}
+function renderCPU(w,h){
+ // A separate canvas avoids rebuilding the WebGL context on every zoom switch.
+ // On GPU-enabled systems, render CPU stripes into the offscreen canvas, then
+ // draw them with a lightweight 2D presentation canvas atop the WebGL canvas.
+ if(!cpuSurface){cpuSurface=document.createElement('canvas');cpuCtx=cpuSurface.getContext('2d',{alpha:false});}
+ cpuSurface.width=w;cpuSurface.height=h;
+ if(!cpuCtx)cpuCtx=cpuSurface.getContext('2d',{alpha:false});
+ if(!ctx){
+  // The overlay receives CPU pixels; the underlying WebGL canvas stays intact.
+  if(!cpuOverlay){cpuOverlay=document.createElement('canvas');cpuOverlay.id='cpuOverlay';cpuOverlay.style.cssText='position:absolute;inset:0;width:100%;height:100%;pointer-events:none';viewport.insertBefore(cpuOverlay,viewport.firstChild.nextSibling);}
+  cpuOverlay.width=w;cpuOverlay.height=h;
+ }
+ const display=ctx||cpuOverlay.getContext('2d',{alpha:false});
+ const image=cpuCtx.createImageData(w,h),pixels=image.data,iter=state.iter,cx=state.cx,cy=state.cy,span=state.span,dx=span/w,top=cy+(h/2)*dx;
+ let row=0,token=++cpuToken;
+ status('64-bit deep zoom · rendering',true);
+ function batch(){if(token!==cpuToken)return;const start=performance.now();while(row<h&&(performance.now()-start)<12){
+  let cImag=top-(row+.5)*dx;
+  for(let x=0;x<w;x++){
+   let cr=cx+(x+.5-w/2)*dx,ci=cImag,q=(cr-.25)*(cr-.25)+ci*ci;let n=0,mag=0;
+   if(!(q*(q+(cr-.25))<=.25*ci*ci||(cr+1)*(cr+1)+ci*ci<=.0625)){
+    let zx=0,zy=0,zx2=0,zy2=0;while(n<iter&&zx2+zy2<=256){zy=2*zx*zy+ci;zx=zx2-zy2+cr;zx2=zx*zx;zy2=zy*zy;n++}mag=zx2+zy2;
+   }else n=iter;
+   colorAt(n,mag,null,pixels,row*w+x);
+  }row++;
+ }
+ if(token!==cpuToken)return;
+ cpuCtx.putImageData(image,0,0,0,0,w,row);
+ // Draw only the newly completed portion; avoid repeatedly copying the entire image.
+ display.drawImage(cpuSurface,0,0,w,row,0,0,w,row);
+ if(row<h){status('64-bit deep zoom · '+Math.round(100*row/h)+'%',true);task=requestAnimationFrame(batch)}
+ else status('64-bit deep zoom');
+ }
+ task=requestAnimationFrame(batch);
+}
+let cpuOverlay=null;
 function cancelCPU(){cpuToken++;cancelAnimationFrame(task);task=0}
 const originalSchedule=scheduleRender;scheduleRender=function(interactive){cancelCPU();clearTimeout(renderTimer);if(interactive)renderTimer=setTimeout(render,35);else render()};
 function setPreset(idx){let p=presets[idx];state.cx=p[0];state.cy=p[1];state.span=p[2];document.querySelectorAll('.preset').forEach(e=>e.classList.toggle('active',+e.dataset.preset===idx));updateLabels();scheduleRender(false)}
@@ -110,16 +160,16 @@ handleRange('iterations',v=>state.iter=v);handleRange('detail',v=>state.res=v/10
 $('palette').addEventListener('change',e=>{state.palette=+e.target.value;changePalette()});$('smooth').addEventListener('change',e=>{state.smooth=e.target.checked;scheduleRender(false)});
 $('gpu').addEventListener('change',e=>{state.gpu=e.target.checked;setupBackend()});
 $('reset').onclick=$('home').onclick=()=>setPreset(0);$('plus').onclick=()=>{let {w,h}=viewSize();zoomAt(2,w/2,h/2)};$('minus').onclick=()=>{let {w,h}=viewSize();zoomAt(.5,w/2,h/2)};
-$('apply').onclick=()=>{let re=+$('real').value,im=+$('imag').value,span=+$('span').value;if(!Number.isFinite(re)||!Number.isFinite(im)||!Number.isFinite(span)||span<=0){alert('Enter valid coordinates and a positive span.');return}state.cx=re;state.cy=im;state.span=clamp(span,1e-14,1e7);document.querySelectorAll('.preset').forEach(e=>e.classList.remove('active'));updateLabels();scheduleRender(false)};
+$('apply').onclick=()=>{let re=+$('real').value,im=+$('imag').value,span=+$('span').value;if(!Number.isFinite(re)||!Number.isFinite(im)||!Number.isFinite(span)||span<=0){alert('Enter valid coordinates and a positive span.');return}state.cx=re;state.cy=im;state.span=clamp(span,1e-12,1e7);document.querySelectorAll('.preset').forEach(e=>e.classList.remove('active'));updateLabels();scheduleRender(false)};
 $('copy').onclick=async()=>{let str=`Center: ${state.cx}, ${state.cy}i; horizontal span: ${state.span}`;try{await navigator.clipboard.writeText(str);$('copy').textContent='Copied!';setTimeout(()=>$('copy').textContent='Copy coordinates',1200)}catch(e){prompt('Copy coordinates:',str)}};
 $('restore').onclick=()=>{Object.assign(state,initial);$('iterations').value=state.iter;$('detail').value=state.res*100;$('palette').value=state.palette;$('colorshift').value=state.shift*100;$('density').value=state.density;$('smooth').checked=state.smooth;$('gpu').checked=state.gpu;paletteLUT=createPalette();setupBackend();setPreset(0)};
-function exportPNG(){if(backend==='GPU')gl.finish();try{canvasRef.toBlob(blob=>{if(!blob)return;let url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='mandelbrot-'+Date.now()+'.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000)},'image/png')}catch(e){alert('Unable to export image: '+e.message)}}$('save').onclick=$('save2').onclick=exportPNG;
+function exportPNG(){const active=(cpuOverlay&&cpuOverlay.style.display!=='none')?cpuOverlay:canvasRef;if(backend==='GPU'&&active===canvasRef)gl.finish();try{active.toBlob(blob=>{if(!blob)return;let url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='mandelbrot-'+Date.now()+'.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000)},'image/png')}catch(e){alert('Unable to export image: '+e.message)}}$('save').onclick=$('save2').onclick=exportPNG;
 document.querySelectorAll('.preset').forEach(e=>e.addEventListener('click',()=>setPreset(+e.dataset.preset)));
 viewport.addEventListener('wheel',e=>{e.preventDefault();const r=viewport.getBoundingClientRect();zoomAt(Math.exp(-clamp(e.deltaY,-150,150)*.007),e.clientX-r.left,e.clientY-r.top)},{passive:false});
 viewport.addEventListener('dblclick',e=>{let r=viewport.getBoundingClientRect();zoomAt(2.5,e.clientX-r.left,e.clientY-r.top)});
 function points(){return [...touches.values()]}
 viewport.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;viewport.setPointerCapture(e.pointerId);touches.set(e.pointerId,{x:e.clientX,y:e.clientY});if(touches.size===1){drag={x:e.clientX,y:e.clientY,cx:state.cx,cy:state.cy};viewport.classList.add('dragging')}else if(touches.size===2){let [a,b]=points(),distance=Math.hypot(a.x-b.x,a.y-b.y);pinch={distance,span:state.span,cx:state.cx,cy:state.cy,midx:(a.x+b.x)/2,midy:(a.y+b.y)/2};drag=null}}, {passive:true});
-viewport.addEventListener('pointermove',e=>{if(!touches.has(e.pointerId))return;touches.set(e.pointerId,{x:e.clientX,y:e.clientY});const {w}=viewSize();if(touches.size===1&&drag){state.cx=drag.cx-(e.clientX-drag.x)*state.span/w;state.cy=drag.cy+(e.clientY-drag.y)*state.span/w;updateLabels();scheduleRender(true)}else if(touches.size===2&&pinch){let [a,b]=points(),distance=Math.max(1,Math.hypot(a.x-b.x,a.y-b.y));state.span=clamp(pinch.span*pinch.distance/distance,1e-14,1e7);let midx=(a.x+b.x)/2,midy=(a.y+b.y)/2;state.cx=pinch.cx-(midx-pinch.midx)*state.span/w;state.cy=pinch.cy+(midy-pinch.midy)*state.span/w;updateLabels();scheduleRender(true)}});
+viewport.addEventListener('pointermove',e=>{if(!touches.has(e.pointerId))return;touches.set(e.pointerId,{x:e.clientX,y:e.clientY});const {w}=viewSize();if(touches.size===1&&drag){state.cx=drag.cx-(e.clientX-drag.x)*state.span/w;state.cy=drag.cy+(e.clientY-drag.y)*state.span/w;updateLabels();scheduleRender(true)}else if(touches.size===2&&pinch){let [a,b]=points(),distance=Math.max(1,Math.hypot(a.x-b.x,a.y-b.y));state.span=clamp(pinch.span*pinch.distance/distance,1e-12,1e7);let midx=(a.x+b.x)/2,midy=(a.y+b.y)/2;state.cx=pinch.cx-(midx-pinch.midx)*state.span/w;state.cy=pinch.cy+(midy-pinch.midy)*state.span/w;updateLabels();scheduleRender(true)}});
 function endPointer(e){touches.delete(e.pointerId);if(!touches.size){drag=null;pinch=null;viewport.classList.remove('dragging');scheduleRender(false)}else{drag=null;pinch=null}}viewport.addEventListener('pointerup',endPointer);viewport.addEventListener('pointercancel',endPointer);viewport.addEventListener('lostpointercapture',endPointer);
 window.addEventListener('keydown',e=>{if(e.target.matches('input,select'))return;let {w,h}=viewSize();if(e.key==='+'||e.key==='=')zoomAt(2,w/2,h/2);if(e.key==='-')zoomAt(.5,w/2,h/2);if(e.key==='0')setPreset(0)});
 let resizeTimer;new ResizeObserver(()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>scheduleRender(false),120)}).observe(viewport);
