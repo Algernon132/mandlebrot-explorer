@@ -58,7 +58,6 @@ function syncState(){state.cx=Number(exact.cx)/1e160;state.cy=Number(exact.cy)/1
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
 const presets=[['Overview','-0.5','0','3.5'],['Seahorse valley','-.7435','.1314','.008'],['Elephant valley','-.75','.1','.045'],['Spiral','-.761574','-.0847596','.0025'],['Mini-brot','-1.25066','.02012','.0002']];
 const palStops=[[[3,9,28],[18,53,105],[27,135,170],[224,185,111],[252,245,202]],[[9,7,32],[51,14,100],[137,67,201],[255,103,189],[244,209,247]],[[15,5,12],[82,15,30],[137,67,201],[255,103,189],[244,209,247]],[[15,5,12],[82,15,30],[195,53,34],[255,169,43],[255,242,171]],[[6,6,8],[57,62,70],[135,143,155],[232,236,241],[255,255,255]],[[18,4,51],[38,92,205],[19,206,156],[247,210,64],[239,62,91]],[[3,16,34],[14,81,108],[61,174,184],[177,231,227],[247,253,251]]];
-// Preserve the original six palettes.
 palStops.splice(1,2,[[9,7,32],[51,14,100],[137,67,201],[255,103,189],[244,209,247]]);
 let paletteLUT=new Uint8Array(1024*3);
 function buildLUT(){const stops=palStops[state.palette];for(let i=0;i<1024;i++){const t=i*5/1024,j=Math.floor(t),f=t-j,a=stops[j],b=stops[(j+1)%5];for(let k=0;k<3;k++)paletteLUT[i*3+k]=Math.round(a[k]*(1-f)+b[k]*f)}}
@@ -76,30 +75,59 @@ function markInteraction(){lastInteraction=performance.now();interactiveUntil=la
 function moveZoom(f,x,y){const {w,h}=sizeCSS();const newSpan=exact.span*RATIO/BigInt(Math.max(1,Math.round(f*1e12)));if(newSpan===0n){status('Precision limit reached');return}const d=exact.span-newSpan;exact.cx+=bigMul(d,x/w-.5);exact.cy-=bigMul(d,(y-h/2)/w);exact.span=newSpan;syncState();markInteraction();updateLabels();applyVisualPreview();scheduleRender();}
 function panBy(dx,dy,base=null){const {w}=sizeCSS();const b=base||exact;exact.cx=b.cx-bigMul(b.span,dx/w);exact.cy=b.cy+bigMul(b.span,dy/w);syncState();markInteraction();updateLabels();applyVisualPreview();scheduleRender();}
 function setView(cx,cy,span){const newSpan=bigParse(span);if(newSpan<1n)throw Error('Minimum span is about 10^-160');exact.cx=bigParse(cx);exact.cy=bigParse(cy);exact.span=newSpan;syncState();updateLabels(true);scheduleRender(true)}
-function applyVisualPreview(){if(!presented)return;const {w,h}=sizeCSS();const scale=Number(presented.bspan)/Number(exact.span);if(!Number.isFinite(scale)||scale<.4||scale>4)return;
- const tx=-Number(exact.cx-presented.bcx)/Number(exact.span)*w,ty=Number(exact.cy-presented.bcy)/Number(exact.span)*w;const css=`translate(${clamp(tx,-2*w,2*w)}px,${clamp(ty,-2*h,2*h)}px) scale(${scale})`;canvas.style.transformOrigin='50% 50%';canvas.style.transform=css;if(cpuOverlay){cpuOverlay.style.transformOrigin='50% 50%';cpuOverlay.style.transform=css;}}
+function applyVisualPreview(){
+ if(!presented)return;
+ const {w,h}=sizeCSS();
+ const scale=Number(presented.bspan)/Number(exact.span);
+ if(!Number.isFinite(scale)||scale<=0)return;
+ const tx=-Number(exact.cx-presented.bcx)/Number(exact.span)*w;
+ const ty=Number(exact.cy-presented.bcy)/Number(exact.span)*w;
+ const layer=presented.layer==='cpu'?cpuOverlay:canvas;
+ if(!layer)return;
+ const css=`translate(${tx}px,${ty}px) scale(${scale})`;
+ layer.style.transformOrigin='50% 50%';layer.style.transform=css;
+}
 function clearPreview(){canvas.style.transform='none';if(cpuOverlay)cpuOverlay.style.transform='none';}
-function scheduleRender(final=false){if(final)interactiveUntil=0;renderPending=true;if(!renderRAF)renderRAF=requestAnimationFrame(renderLoop);}
+function scheduleRender(final=false){
+ if(final){interactiveUntil=0;clearTimeout(cpuDebounce);}
+ renderPending=true;
+ const {w}=sizeCSS();
+ const useCPU=!(gl&&state.gpu&&gpuPrecisionOK(Math.max(1,Math.round(w*state.res)))) || state.iter>1500;
+ if(!final&&useCPU){
+  clearTimeout(cpuDebounce);
+  if(contacts.size>0)return;  // Never start a CPU job mid-drag.
+  cpuDebounce=setTimeout(()=>{if(!renderRAF)renderRAF=requestAnimationFrame(renderLoop);},125);
+  return;
+ }
+ if(!renderRAF)renderRAF=requestAnimationFrame(renderLoop);
+}
 let lastRenderFrame=0;function renderLoop(t){renderRAF=0;if(!renderPending)return;
- // CSS reprojection follows every pointer event, but expensive preview
- // recalculation is limited to roughly 12 frames/second during navigation.
  if(interactionScale()<1&&t-lastRenderFrame<82){renderRAF=requestAnimationFrame(renderLoop);return;}
  renderPending=false;lastRenderFrame=t;renderCurrent();}
 function requestFrame(){if(framePending)return;framePending=true;requestAnimationFrame(t=>{framePending=false;perf.uiFrames++;if(colorPlaying){state.shift=(colorBase+(t-colorStart)*.000075*colorSpeed)%1;$('colorshift').value=Math.round(state.shift*100);$('colorshiftValue').textContent=Math.round(state.shift*100);presentColor()}if(colorPlaying||perfVisible)requestFrame();});}
 let colorPlaying=false,colorBase=0,colorStart=0,colorSpeed=1,perfVisible=false;
-let cpuOverlay=null,cpuContext=null,cpuCache=null,cpuToken=0,cpuProgress=0,slowColorInFlight=false,cpuJobView=null,cpuParts=0,cpuDoneParts=0,cpuRecoloredParts=0,cpuRows=[];
-function makeOverlay(){if(cpuOverlay)return;cpuOverlay=document.createElement('canvas');cpuOverlay.id='cpuOverlay';cpuOverlay.style.cssText='position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';viewport.insertBefore(cpuOverlay,viewport.querySelector('.floattools'));cpuContext=cpuOverlay.getContext('2d',{alpha:false});}
+let cpuOverlay=null,cpuContext=null,cpuStage=null,cpuStageContext=null,cpuCache=null,cpuToken=0,cpuProgress=0,slowColorInFlight=false,cpuJobView=null,cpuParts=0,cpuDoneParts=0,cpuRecoloredParts=0,cpuRows=[];
+let cpuDebounce=0;
+function makeOverlay(){if(cpuOverlay)return;cpuOverlay=document.createElement('canvas');cpuOverlay.id='cpuOverlay';cpuOverlay.style.cssText='position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none;';viewport.insertBefore(cpuOverlay,viewport.querySelector('.floattools'));cpuContext=cpuOverlay.getContext('2d',{alpha:false});}
+function ensureCPUStage(w,h){if(!cpuStage){cpuStage=document.createElement('canvas');cpuStageContext=cpuStage.getContext('2d',{alpha:false});}cpuStage.width=w;cpuStage.height=h;}
 function hideOverlay(){if(cpuOverlay)cpuOverlay.style.display='none';}
-function showOverlay(w,h){makeOverlay();
- // Preserve the previous completed picture as a stretched preview while new
- // CPU stripes are calculated. Avoid a blank screen after fullscreen/resizing.
- if(cpuOverlay.width!==w||cpuOverlay.height!==h){
-  let old=null;if(cpuOverlay.width>0&&cpuOverlay.height>0){old=document.createElement('canvas');old.width=cpuOverlay.width;old.height=cpuOverlay.height;old.getContext('2d').drawImage(cpuOverlay,0,0);}
-  cpuOverlay.width=w;cpuOverlay.height=h;if(old)cpuContext.drawImage(old,0,0,w,h);
- }
- cpuOverlay.style.display='block';}
-// GPU pipeline: cache escape counts in an RGBA8 texture; changing colors is one
-// inexpensive fullscreen shading pass. A second texture enables pan-strip reuse.
+function showOverlay(w,h){
+ makeOverlay();
+ ensureCPUStage(w,h);
+}
+function cpuFrameMatches(){return cpuJobView&&cpuJobView.bcx===exact.cx&&cpuJobView.bcy===exact.cy&&cpuJobView.bspan===exact.span&&cpuCache?.w===dimensions()[0]&&cpuCache?.h===dimensions()[1];}
+function presentCompletedCPU(w,h){
+ if(!cpuFrameMatches())return false;
+ if(cpuOverlay.width!==w)cpuOverlay.width=w;
+ if(cpuOverlay.height!==h)cpuOverlay.height=h;
+ cpuContext.drawImage(cpuStage,0,0);
+ cpuOverlay.style.transform='none';
+ cpuOverlay.style.display='block';
+ canvas.style.transform='none';
+ presented={...cpuJobView,w,h,layer:'cpu'};
+ perf.frames++;
+ return true;
+}
 const vsrc=`attribute vec2 a_position;void main(){gl_Position=vec4(a_position,0.,1.);}`;
 const escapeFS=`precision highp float;
 uniform vec2 u_resolution,u_center;uniform float u_span;uniform int u_iter;uniform float u_smooth;
@@ -158,7 +186,6 @@ function beginGPUTimer(){const e=GL.glTimer;if(!e||GL.queryPending)return;try{co
 function endGPUTimer(){const e=GL.glTimer;if(!e||!GL.queryActive)return;try{e.endQueryEXT(e.TIME_ELAPSED_EXT);GL.queryPending=GL.queryActive;GL.queryActive=null;}catch(err){GL.queryActive=null;}}
 function pollGPUTimer(){const e=GL.glTimer,q=GL.queryPending;if(!e||!q)return;try{if(e.getQueryObjectEXT(q,e.QUERY_RESULT_AVAILABLE_EXT)){if(!gl.getParameter(e.GPU_DISJOINT_EXT))perf.glMs=e.getQueryObjectEXT(q,e.QUERY_RESULT_EXT)/1e6;e.deleteQueryEXT(q);GL.queryPending=null;}}catch(err){GL.queryPending=null;}}
 function initCanvas(){if(!state.gpu){gl=null;ctx2d=canvas.getContext('2d',{alpha:false});status('CPU worker');return}if(initGPU())return;
- // A canvas that claimed a WebGL context cannot become a 2D canvas.
  const replacement=canvas.cloneNode(false);canvas.replaceWith(replacement);canvas=replacement;ctx2d=canvas.getContext('2d',{alpha:false});status('CPU worker');}
 function ensureTextures(w,h){if(GL.w===w&&GL.h===h)return;GL.w=w;GL.h=h;GL.valid=false;GL.cache=null;
  for(let i=0;i<2;i++){gl.bindTexture(gl.TEXTURE_2D,GL.tex[i]);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
@@ -176,7 +203,6 @@ function gpuPanStrips(w,h){const c=GL.cache;
  if(Math.abs(fx-sx)>.49||Math.abs(fy-sy)>.49)return false;
  const next=1-GL.current;bindTarget(next,w,h);gl.disable(gl.SCISSOR_TEST);
  const m=GL.programs.copy;startProgram(m);gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,GL.tex[GL.current]);gl.uniform1i(m.uni.tex,0);gl.uniform2f(m.uni.resolution,w,h);gl.uniform2f(m.uni.offset,sx,sy);gl.drawArrays(gl.TRIANGLES,0,6);
- // The original iteration shader is run ONLY for the newly uncovered strips.
  uniformsCompute(w,h);gl.enable(gl.SCISSOR_TEST);
  if(sx>0){gl.scissor(w-sx,0,sx,h);gl.drawArrays(gl.TRIANGLES,0,6)}
  else if(sx<0){gl.scissor(0,0,-sx,h);gl.drawArrays(gl.TRIANGLES,0,6)}
@@ -192,8 +218,6 @@ let gpuColorSource=null,gpuColorTex=null,gpuColorDims=null;
 function uploadCPUCache(){if(!gl||GL.direct||!cpuCache?.complete||gpuColorSource===cpuCache)return;
  const {w,h,values}=cpuCache,bytes=new Uint8Array(w*h*4);for(let i=0,j=0;i<values.length;i++,j+=4){const v=values[i];if(v<0)continue;const n=clamp(Math.round(v*16),0,16777215);bytes[j]=n&255;bytes[j+1]=(n>>8)&255;bytes[j+2]=(n>>16)&255;bytes[j+3]=255;}
  try{if(!gpuColorTex)gpuColorTex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,gpuColorTex);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,bytes);gpuColorSource=cpuCache;gpuColorDims=[w,h];}catch(e){console.warn('CPU color upload unavailable:',e);gpuColorSource=null;}}
-// Heavy CPU work is deliberately isolated from the UI thread. The worker has
-// interruptible progressive rows and a perturbation renderer for deep zooms.
 const workerSource=String.raw`
 'use strict';
 let current=null;
@@ -203,12 +227,8 @@ function inside(cr,ci){const a=cr-.25,q=a*a+ci*ci;return q*(q+a)<=.25*ci*ci||(cr
 function ordinary(cr,ci,iter,smooth){if(inside(cr,ci))return -1;
  let x=0,y=0,x2=0,y2=0,n=0,sx=0,sy=0;
  while(n<iter&&x2+y2<=256){y=2*x*y+ci;x=x2-y2+cr;x2=x*x;y2=y*y;n++;
- // Check for cycles only on ordinary double precision orbits; avoid false
- // interior decisions for extremely tiny perturbations.
  if(n%32===0){if((x-sx)*(x-sx)+(y-sy)*(y-sy)<1e-30)return -1;sx=x;sy=y;}}
  if(n>=iter)return -1;const mag=x2+y2;return smooth&&mag>1?n+1-Math.log2(Math.max(1e-12,.5*Math.log(mag))):n;}
-// BigInt fixed-point reference orbit. A single high-precision orbit is reused
-// by EVERY pixel; offsets follow the delta recurrence in regular doubles.
 async function reference(job){const S=10n**160n;let x=0n,y=0n;const cx=BigInt(job.bigCx),cy=BigInt(job.bigCy),xr=[],yi=[];
  const bound=256n*S*S;
  xr.push(0);yi.push(0);
@@ -243,7 +263,6 @@ async function render(job){const w=job.w,h=job.h,rowStart=job.rowStart,rowEnd=jo
  let row=rowStart;const a=job.cx-.25,q=a*a+job.cy*job.cy;
  const blackSafe=deep&&(Math.max(.25*job.cy*job.cy-q*(q+a),.0625-(job.cx+1)*(job.cx+1)-job.cy*job.cy)>1e-10);
  while(row<rowEnd){const start=row,clock=performance.now();
-  // Work through complete scanlines; message chunks are transferred, not copied.
   do{const ci=job.cy-(row+.5-h/2)*step;
    for(let x=0;x<w;x++){
     const cr=job.cx+(x+.5-w/2)*step;
@@ -272,17 +291,22 @@ function stopWorkers(){for(const w of workers)w.terminate();workers=[];}
 function workerMessage(e){const m=e.data;if(m.id!==cpuToken)return;
  if(m.type==='status'){status(m.text,true);return;}
  if(m.type==='error'){console.error(m.message);status('Render failed — see console');return;}
- if(m.type==='stripe'){if(!cpuOverlay)return;const pixels=new Uint8ClampedArray(m.pixels);cpuContext.putImageData(new ImageData(pixels,m.w,m.count),0,m.row);cpuRows[m.part]=m.rowsDone;cpuProgress=cpuRows.reduce((a,b)=>a+b,0)/m.h;status(`CPU ${Math.round(cpuProgress*100)}%`,true);return;}
+ if(m.type==='stripe'){if(!cpuStageContext)return;const pixels=new Uint8ClampedArray(m.pixels);cpuStageContext.putImageData(new ImageData(pixels,m.w,m.count),0,m.row);cpuRows[m.part]=m.rowsDone;cpuProgress=cpuRows.reduce((a,b)=>a+b,0)/m.h;status(`CPU ${Math.round(cpuProgress*100)}%`,true);return;}
  if(m.type==='done'){
   cpuCache.values.set(new Float32Array(m.values),m.rowStart*m.w);
   cpuDoneParts++;
   if(cpuDoneParts<cpuParts)return;
   cpuCache.complete=true;renderBusy=false;perf.computeMs=performance.now()-renderStarted;status(cpuModeLabel,false);
-  if(gl&&!GL.direct){uploadCPUCache();if(gpuColorSource===cpuCache){hideOverlay();colorGPU(m.w,m.h,gpuColorTex);}}
-  presented={...cpuJobView,w:m.w,h:m.h};clearPreview();perf.frames++;return;
+  if(!cpuFrameMatches()){
+   renderPending=true;scheduleRender(!contacts.size&&performance.now()>=interactiveUntil);
+   return;
+  }
+  presentCompletedCPU(m.w,m.h);
+  if(gl&&!GL.direct){uploadCPUCache();}
+  return;
  }
  if(m.type==='recolor'){
-  if(cpuOverlay&&(!gl||GL.direct)){cpuContext.putImageData(new ImageData(new Uint8ClampedArray(m.pixels),m.w,m.h),0,m.rowStart);}
+  if(cpuOverlay&&presented?.layer==='cpu'&&cpuFrameMatches()){cpuContext.putImageData(new ImageData(new Uint8ClampedArray(m.pixels),m.w,m.h),0,m.rowStart);}
   cpuRecoloredParts++;if(cpuRecoloredParts>=cpuParts)slowColorInFlight=false;
  }
 }
@@ -300,25 +324,23 @@ function startCPU(w,h,deep){renderStarted=performance.now();renderBusy=true;cpuP
 function needsPerturbation(w){const mag=Math.max(Math.abs(state.cx),Math.abs(state.cy),1e-8),ulp=Number.EPSILON*mag;return state.span/w<ulp*12;}
 function renderCurrent(){const now=performance.now(),[w,h]=dimensions();$('renderinfo').textContent=`${w}×${h}`;
  const deep=needsPerturbation(w),gpuOK=gl&&state.gpu&&gpuPrecisionOK(w);
+ if(!gpuOK&&contacts.size){renderPending=true;return;}
  const t0=performance.now();renderGeneration++;
  if(gpuOK){stopWorkers();cpuToken++;renderBusy=false;hideOverlay();cpuCache=null;gpuColorSource=null;
   try{beginGPUTimer();if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;GL.valid=false;}if(GL.direct){directGPU(w,h);perf.mode='GPU direct'}else{ensureTextures(w,h);if(!gpuPanStrips(w,h))gpuFull(w,h);colorGPU(w,h);perf.mode='GPU cached';}
-   endGPUTimer();status(perf.mode);$('precisioninfo').textContent='GPU 32-bit';perf.computeMs=performance.now()-t0;perf.drawMs=perf.computeMs;perf.frames++;presented={cx:state.cx,cy:state.cy,span:state.span,bcx:exact.cx,bcy:exact.cy,bspan:exact.span,w,h};clearPreview();}
-  catch(err){endGPUTimer();console.warn('GPU pipeline failed:',err);GL.direct=true;try{directGPU(w,h);perf.mode='GPU direct';status('GPU direct fallback');presented={cx:state.cx,cy:state.cy,span:state.span,bcx:exact.cx,bcy:exact.cy,bspan:exact.span,w,h};clearPreview();}catch(err2){console.warn(err2);state.gpu=false;$('gpu').checked=false;switchCPU();startCPU(w,h,deep)}}
+   endGPUTimer();status(perf.mode);$('precisioninfo').textContent='GPU 32-bit';perf.computeMs=performance.now()-t0;perf.drawMs=perf.computeMs;perf.frames++;presented={cx:state.cx,cy:state.cy,span:state.span,bcx:exact.cx,bcy:exact.cy,bspan:exact.span,w,h,layer:'gpu'};clearPreview();}
+  catch(err){endGPUTimer();console.warn('GPU pipeline failed:',err);GL.direct=true;try{directGPU(w,h);perf.mode='GPU direct';status('GPU direct fallback');presented={cx:state.cx,cy:state.cy,span:state.span,bcx:exact.cx,bcy:exact.cy,bspan:exact.span,w,h,layer:'gpu'};clearPreview();}catch(err2){console.warn(err2);state.gpu=false;$('gpu').checked=false;switchCPU();startCPU(w,h,deep)}}
  }else{
   $('precisioninfo').textContent=deep?'BigInt + perturbation':'64-bit';perf.mode=deep?'Perturbation worker':'CPU worker';
-  if(canvas.width!==w)canvas.width=w;if(canvas.height!==h)canvas.height=h;
   startCPU(w,h,deep);
  }
 }
 function switchCPU(){gl=null;GL.valid=false;const old=canvas,newCanvas=old.cloneNode(false);old.replaceWith(newCanvas);canvas=newCanvas;ctx2d=canvas.getContext('2d',{alpha:false});}
 function presentColor(){if(gl&&!GL.direct&&GL.valid&&GL.cache&&!cpuCache&&gpuPrecisionOK(GL.w)){colorGPU(GL.w,GL.h);perf.frames++;return;}
- if(gl&&cpuCache?.complete&&gpuColorSource===cpuCache){colorGPU(cpuCache.w,cpuCache.h,gpuColorTex);perf.frames++;return;}
+ if(gl&&cpuCache?.complete&&gpuColorSource===cpuCache){if(presented?.layer==='gpu'){colorGPU(cpuCache.w,cpuCache.h,gpuColorTex);perf.frames++;return;}}
  if(gl&&GL.direct&&!cpuCache&&gpuPrecisionOK(canvas.width)){directGPU(canvas.width,canvas.height);perf.frames++;return;}
  if(cpuCache?.complete&&!slowColorInFlight&&workers.length){slowColorInFlight=true;cpuRecoloredParts=0;for(const wk of workers)wk.postMessage({type:'recolor',id:cpuToken,shift:state.shift,density:state.density,palette:palStops[state.palette]});perf.frames++;}
 }
-// Performance counters are estimates of render work, NOT system utilization:
-// browsers don't expose system-wide CPU or GPU occupancy to websites.
 const perfElement=$('perfHud');let perfLast=performance.now(),fpsIdle=0;
 function perfTick(){const now=performance.now(),dt=now-perfLast;if(dt<900)return;perf.fps=Math.round(perf.frames*1000/dt);const uiFps=Math.round(perf.uiFrames*1000/dt);perfLast=now;perf.frames=0;perf.uiFrames=0;pollGPUTimer();if(colorPlaying)$('colorStatus').textContent=`Animating · ${perf.fps} rendered fps`;
  if(perfVisible){const mode=perf.mode, dims=`${canvas.width} × ${canvas.height}`;
@@ -364,7 +386,7 @@ const contacts=new Map();let drag=null,pinch=null;
 viewport.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;viewport.setPointerCapture(e.pointerId);contacts.set(e.pointerId,{x:e.clientX,y:e.clientY});if(contacts.size===1){drag={x:e.clientX,y:e.clientY,cx:exact.cx,cy:exact.cy,span:exact.span};viewport.classList.add('dragging')}else if(contacts.size===2){const [a,b]=[...contacts.values()];pinch={dist:Math.max(1,Math.hypot(a.x-b.x,a.y-b.y)),mx:(a.x+b.x)/2,my:(a.y+b.y)/2};drag=null;}});
 viewport.addEventListener('pointermove',e=>{if(!contacts.has(e.pointerId))return;const old=contacts.get(e.pointerId);contacts.set(e.pointerId,{x:e.clientX,y:e.clientY});if(contacts.size===1&&drag){const {w}=sizeCSS();exact.cx=drag.cx-bigMul(drag.span,(e.clientX-drag.x)/w);exact.cy=drag.cy+bigMul(drag.span,(e.clientY-drag.y)/w);syncState();markInteraction();updateLabels();applyVisualPreview();scheduleRender();}
  else if(contacts.size===2&&pinch){const [a,b]=[...contacts.values()],dist=Math.max(1,Math.hypot(a.x-b.x,a.y-b.y)),mx=(a.x+b.x)/2,my=(a.y+b.y)/2;const r=viewport.getBoundingClientRect();moveZoom(clamp(dist/pinch.dist,.5,2),mx-r.left,my-r.top);const {w}=sizeCSS();exact.cx-=bigMul(exact.span,(mx-pinch.mx)/w);exact.cy+=bigMul(exact.span,(my-pinch.my)/w);syncState();updateLabels();pinch={dist,mx,my};applyVisualPreview();}});
-function endContact(e){contacts.delete(e.pointerId);if(!contacts.size){drag=null;pinch=null;viewport.classList.remove('dragging');scheduleRender(true)}else{drag=null;pinch=null}}
+function endContact(e){contacts.delete(e.pointerId);if(!contacts.size){drag=null;pinch=null;viewport.classList.remove('dragging');scheduleRender()}else{drag=null;pinch=null}}
 viewport.addEventListener('pointerup',endContact);viewport.addEventListener('pointercancel',endContact);viewport.addEventListener('lostpointercapture',endContact);
 viewport.addEventListener('wheel',e=>{e.preventDefault();const r=viewport.getBoundingClientRect();moveZoom(Math.exp(-clamp(e.deltaY,-120,120)*.006),e.clientX-r.left,e.clientY-r.top)},{passive:false});
 viewport.addEventListener('dblclick',e=>{const r=viewport.getBoundingClientRect();moveZoom(2.5,e.clientX-r.left,e.clientY-r.top)});
