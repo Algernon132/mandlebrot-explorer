@@ -70,7 +70,13 @@ function updateLabels(forceFields=false){$('coords').textContent=`${bigFormat(ex
 let panInProgress=false,lastInteraction=0,interactiveUntil=0,renderPending=false,settleTimer=0,renderRAF=0,renderGeneration=0,renderBusy=false,renderStarted=0,presented=null,framePending=false;
 const perf={frames:0,uiFrames:0,start:performance.now(),fps:0,drawMs:0,computeMs:0,lastCPU:0,glMs:null,panReuse:0,recomputed:0,mode:'Starting'};
 const interactionScale=()=>state.adaptive&&performance.now()<interactiveUntil?0.57:1;
-function dimensions(){const {w,h}=sizeCSS(), dpr=Math.min(4,window.devicePixelRatio||1);let scale=state.res*dpr*interactionScale();const maxTexture=gl?Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)):8192;const maxPixels=gl?16000000:8000000;const ratio=Math.min(1,maxTexture/(w*scale),maxTexture/(h*scale),Math.sqrt(maxPixels/(w*h*scale*scale)));scale*=ratio;const actual=scale/(dpr*interactionScale());$('resolutionHint').textContent=ratio<.999?`Memory/texture limit: ${Math.round(actual*100)}% at this viewport size. Animation never reduces the selected resolution.`:'100% follows physical screen pixels. Interaction previews may be temporarily reduced when Adaptive preview is enabled.';return [Math.max(1,Math.round(w*scale)),Math.max(1,Math.round(h*scale))];}
+function dimensions(){const {w,h}=sizeCSS(), dpr=Math.min(4,window.devicePixelRatio||1);let scale=state.res*dpr*interactionScale();const maxTexture=gl?Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)):8192;const maxPixels=gl?16000000:8000000;let ratio=Math.min(1,maxTexture/(w*scale),maxTexture/(h*scale),Math.sqrt(maxPixels/(w*h*scale*scale)));
+ // For 64-bit CPU interaction ONLY, keep previews cheap regardless of the
+ // chosen final resolution. Never limit the settled full-resolution render.
+ const cpuInteraction=state.adaptive&&performance.now()<interactiveUntil&&
+   !(gl&&state.gpu&&gpuPrecisionOK(Math.max(1,Math.round(w*scale))));
+ if(cpuInteraction)ratio=Math.min(ratio,Math.sqrt(260000/(w*h*scale*scale)));
+ scale*=ratio;const actual=scale/(dpr*interactionScale());$('resolutionHint').textContent=ratio<.999?`Memory/texture limit: ${Math.round(actual*100)}% at this viewport size. Animation never reduces the selected resolution.`:'100% follows physical screen pixels. CPU navigation previews are temporarily reduced with Adaptive preview enabled.';return [Math.max(1,Math.round(w*scale)),Math.max(1,Math.round(h*scale))];}
 function markInteraction(){lastInteraction=performance.now();interactiveUntil=lastInteraction+260;clearTimeout(settleTimer);settleTimer=setTimeout(()=>{interactiveUntil=0;scheduleRender(true);},280)}
 function moveZoom(f,x,y){const {w,h}=sizeCSS();const newSpan=exact.span*RATIO/BigInt(Math.max(1,Math.round(f*1e12)));if(newSpan===0n){status('Precision limit reached');return}const d=exact.span-newSpan;exact.cx+=bigMul(d,x/w-.5);exact.cy-=bigMul(d,(y-h/2)/w);exact.span=newSpan;syncState();markInteraction();updateLabels();applyVisualPreview();scheduleRender();}
 function panBy(dx,dy,base=null){const {w}=sizeCSS();const b=base||exact;exact.cx=b.cx-bigMul(b.span,dx/w);exact.cy=b.cy+bigMul(b.span,dy/w);syncState();markInteraction();updateLabels();applyVisualPreview();scheduleRender();}
@@ -88,15 +94,27 @@ function applyVisualPreview(){
  layer.style.transformOrigin='50% 50%';layer.style.transform=css;
 }
 function clearPreview(){canvas.style.transform='none';if(cpuOverlay)cpuOverlay.style.transform='none';}
+// CPU previews are allowed DURING navigation, but throttled and serialised.
+// They draw the *new* complex-plane region at interactionScale(), not just the
+// stretched previous screenshot. Full-quality rendering follows on idle.
+let cpuPreviewTimer=0,lastCPUPreviewStart=-1000;
 function scheduleRender(final=false){
- if(final){interactiveUntil=0;clearTimeout(cpuDebounce);}
+ if(final){interactiveUntil=0;clearTimeout(cpuDebounce);clearTimeout(cpuPreviewTimer);cpuPreviewTimer=0;}
  renderPending=true;
  const {w}=sizeCSS();
  const useCPU=!(gl&&state.gpu&&gpuPrecisionOK(Math.max(1,Math.round(w*state.res)))) || state.iter>1500;
  if(!final&&useCPU){
-  clearTimeout(cpuDebounce);
-  if(contacts.size>0)return;  // Never start a CPU job mid-drag.
-  cpuDebounce=setTimeout(()=>{if(!renderRAF)renderRAF=requestAnimationFrame(renderLoop);},125);
+  if(cpuPreviewTimer)return;
+  // Limit preview submissions to ~7/sec. Never kill a worker that is still
+  // producing an earlier preview; it will be reprojected when complete.
+  const delay=Math.max(55,140-(performance.now()-lastCPUPreviewStart));
+  cpuPreviewTimer=setTimeout(()=>{
+   cpuPreviewTimer=0;
+   if(!renderPending)return;
+   if(renderBusy&&cpuJobView){scheduleRender();return;}
+   lastCPUPreviewStart=performance.now();
+   if(!renderRAF)renderRAF=requestAnimationFrame(renderLoop);
+  },delay);
   return;
  }
  if(!renderRAF)renderRAF=requestAnimationFrame(renderLoop);
@@ -115,9 +133,9 @@ function showOverlay(w,h){
  makeOverlay();
  ensureCPUStage(w,h);
 }
-function cpuFrameMatches(){return cpuJobView&&cpuJobView.bcx===exact.cx&&cpuJobView.bcy===exact.cy&&cpuJobView.bspan===exact.span&&cpuCache?.w===dimensions()[0]&&cpuCache?.h===dimensions()[1];}
-function presentCompletedCPU(w,h){
- if(!cpuFrameMatches())return false;
+function cpuFrameMatches(){return cpuJobView&&cpuJobView.bcx===exact.cx&&cpuJobView.bcy===exact.cy&&cpuJobView.bspan===exact.span&&cpuCache?.w===cpuJobView.w&&cpuCache?.h===cpuJobView.h;}
+function presentCompletedCPU(w,h,stalePreview=false){
+ if(!stalePreview&&!cpuFrameMatches())return false;
  if(cpuOverlay.width!==w)cpuOverlay.width=w;
  if(cpuOverlay.height!==h)cpuOverlay.height=h;
  cpuContext.drawImage(cpuStage,0,0);
@@ -125,8 +143,18 @@ function presentCompletedCPU(w,h){
  cpuOverlay.style.display='block';
  canvas.style.transform='none';
  presented={...cpuJobView,w,h,layer:'cpu'};
+ // A completed preview from the immediately preceding camera can be reused
+ // under the CURRENT camera transform. Never snap the camera backwards.
+ if(stalePreview)applyVisualPreview();else clearPreview();
  perf.frames++;
  return true;
+}
+function isUsefulPreview(){
+ if(!cpuJobView?.preview)return false;
+ const ratio=Number(cpuJobView.bspan)/Number(exact.span);
+ const dx=Number(exact.cx-cpuJobView.bcx)/Number(exact.span);
+ const dy=Number(exact.cy-cpuJobView.bcy)/Number(exact.span);
+ return Number.isFinite(ratio)&&ratio>.45&&ratio<2.3&&Math.abs(dx)<1.5&&Math.abs(dy)<1.5;
 }
 const vsrc=`attribute vec2 a_position;void main(){gl_Position=vec4(a_position,0.,1.);}`;
 const escapeFS=`precision highp float;
@@ -298,11 +326,15 @@ function workerMessage(e){const m=e.data;if(m.id!==cpuToken)return;
   if(cpuDoneParts<cpuParts)return;
   cpuCache.complete=true;renderBusy=false;perf.computeMs=performance.now()-renderStarted;status(cpuModeLabel,false);
   if(!cpuFrameMatches()){
+   if(isUsefulPreview())presentCompletedCPU(m.w,m.h,true);
    renderPending=true;scheduleRender(!contacts.size&&performance.now()>=interactiveUntil);
    return;
   }
   presentCompletedCPU(m.w,m.h);
   if(gl&&!GL.direct){uploadCPUCache();}
+  // Continue refining a settled low-resolution preview into the user's full
+  // selected render resolution, even if the idle timer has just elapsed.
+  if(cpuJobView.preview&&performance.now()>=interactiveUntil&&!contacts.size)scheduleRender(true);
   return;
  }
  if(m.type==='recolor'){
@@ -312,7 +344,7 @@ function workerMessage(e){const m=e.data;if(m.id!==cpuToken)return;
 }
 let cpuModeLabel='64-bit CPU';
 function startCPU(w,h,deep){renderStarted=performance.now();renderBusy=true;cpuProgress=0;gpuColorSource=null;
- const id=++cpuToken;cpuJobView={cx:state.cx,cy:state.cy,span:state.span,bcx:exact.cx,bcy:exact.cy,bspan:exact.span};
+ const id=++cpuToken;cpuJobView={cx:state.cx,cy:state.cy,span:state.span,bcx:exact.cx,bcy:exact.cy,bspan:exact.span,w,h,preview:interactionScale()<1};
  showOverlay(w,h);stopWorkers();cpuModeLabel=deep?'BigInt reference + perturbation':'64-bit CPU';status(cpuModeLabel,true);
  cpuParts=Math.max(1,Math.min(3,Math.floor((navigator.hardwareConcurrency||2)/2),Math.floor(h/96)||1));cpuDoneParts=0;cpuRows=Array(cpuParts).fill(0);slowColorInFlight=false;
  cpuCache={w,h,values:new Float32Array(w*h),complete:false,id,cx:state.cx,cy:state.cy,span:state.span};
@@ -322,9 +354,9 @@ function startCPU(w,h,deep){renderStarted=performance.now();renderBusy=true;cpuP
  }
 }
 function needsPerturbation(w){const mag=Math.max(Math.abs(state.cx),Math.abs(state.cy),1e-8),ulp=Number.EPSILON*mag;return state.span/w<ulp*12;}
-function renderCurrent(){const now=performance.now(),[w,h]=dimensions();$('renderinfo').textContent=`${w}×${h}`;
+function renderCurrent(){clearTimeout(cpuPreviewTimer);cpuPreviewTimer=0;const now=performance.now(),[w,h]=dimensions();$('renderinfo').textContent=`${w}×${h}`;
  const deep=needsPerturbation(w),gpuOK=gl&&state.gpu&&gpuPrecisionOK(w);
- if(!gpuOK&&contacts.size){renderPending=true;return;}
+ // CPU interaction previews are intentionally allowed while dragging.
  const t0=performance.now();renderGeneration++;
  if(gpuOK){stopWorkers();cpuToken++;renderBusy=false;hideOverlay();cpuCache=null;gpuColorSource=null;
   try{beginGPUTimer();if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;GL.valid=false;}if(GL.direct){directGPU(w,h);perf.mode='GPU direct'}else{ensureTextures(w,h);if(!gpuPanStrips(w,h))gpuFull(w,h);colorGPU(w,h);perf.mode='GPU cached';}
